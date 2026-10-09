@@ -124,6 +124,9 @@ jobs:
             ${{ matrix.package }}/go.mod
             ${{ matrix.package }}/go.sum
 
+      - name: Use the Docker Hub mirror
+        uses: ./.github/actions/docker-hub-mirror
+
       - name: Reap orphaned Testcontainers from previous runs
         # Persistent runner + Ryuk disabled: prune leftover containers
         # from SIGKILL/timeout/OOM in prior jobs.
