@@ -4,18 +4,13 @@ package sandbox
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
 	"github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/envd"
 	"github.com/e2b-dev/infra/packages/shared/pkg/consts"
 )
-
-// Caps the guest-supplied /metrics body; envd's is a few KB even with its 32 OOM kills.
-const maxMetricsBodySize = 1 << 20
 
 type Metrics struct {
 	Timestamp int64 `json:"ts"` // Unix Timestamp in UTC
@@ -68,7 +63,7 @@ func (c *Checks) GetMetrics(ctx context.Context, timeout time.Duration) (*Metric
 	}
 
 	var m Metrics
-	err = json.NewDecoder(io.LimitReader(response.Body, maxMetricsBodySize)).Decode(&m)
+	err = decodeEnvdResult(response.Body, &m)
 	if err != nil {
 		return nil, err
 	}

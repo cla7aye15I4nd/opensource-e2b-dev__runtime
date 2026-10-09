@@ -14,6 +14,7 @@ import (
 	"os"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -32,7 +33,46 @@ import (
 
 const (
 	loopDelay = 5 * time.Millisecond
+
+	// maxEnvdResultBodySize caps a JSON result the orchestrator decodes from envd. The
+	// guest writes it; /metrics's is a few KB even with its 32 OOM kills.
+	maxEnvdResultBodySize = 1 << 20
+
+	// envdErrorBodyRunes is the length, in runes, an error or log line cuts a failed call's body to.
+	envdErrorBodyRunes = 100
+	// envdErrorBodyLimit is the most of a failed call's body worth reading. Any
+	// envdErrorBodyRunes runes fit in that many times utf8.UTFMax bytes, and the
+	// extra byte lets Truncate still tell that a longer body was cut.
+	envdErrorBodyLimit = envdErrorBodyRunes*utf8.UTFMax + 1
 )
+
+// envdErrorBody reads the start of a failed envd response for an error or log
+// line. The guest writes the body, so only enough of it to build the message is read.
+func envdErrorBody(r io.Reader) string {
+	body, _ := io.ReadAll(io.LimitReader(r, envdErrorBodyLimit))
+
+	return utils.Truncate(string(body), envdErrorBodyRunes)
+}
+
+// decodeEnvdResult decodes a guest-supplied JSON result, reading at most maxEnvdResultBodySize.
+func decodeEnvdResult(r io.Reader, v any) error {
+	return json.NewDecoder(io.LimitReader(r, maxEnvdResultBodySize)).Decode(v)
+}
+
+// cancelOnClose ends a request's context when its body is closed, so the request's
+// deadline stays in force while the caller reads the body.
+type cancelOnClose struct {
+	io.ReadCloser
+
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+
+	return err
+}
 
 // envdInitExitType classifies the outcome of an envd init call.
 type envdInitExitType string
@@ -119,11 +159,12 @@ func (s *Sandbox) doRequestWithInfiniteRetries(
 		}
 
 		response, err := sandboxHttpClient.Do(request)
-		cancel()
-
 		if err == nil {
+			response.Body = &cancelOnClose{ReadCloser: response.Body, cancel: cancel}
+
 			return response, requestCount, nil
 		}
+		cancel()
 
 		select {
 		case <-ctx.Done():
@@ -168,12 +209,10 @@ func (s *Sandbox) callEnvdFreeze(ctx context.Context, timeout time.Duration, hie
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-
-		return envd.FreezeResult{}, false, fmt.Errorf("freeze returned %d: %s", resp.StatusCode, utils.Truncate(string(body), 100))
+		return envd.FreezeResult{}, false, fmt.Errorf("freeze returned %d: %s", resp.StatusCode, envdErrorBody(resp.Body))
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeEnvdResult(resp.Body, &result); err != nil {
 		return envd.FreezeResult{}, false, fmt.Errorf("decode freeze result: %w", err)
 	}
 
@@ -221,13 +260,11 @@ func (s *Sandbox) callEnvdCollapse(ctx context.Context, timeout time.Duration) (
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-
-		return envd.CollapseResult{}, fmt.Errorf("collapse returned %d: %s", resp.StatusCode, utils.Truncate(string(body), 100))
+		return envd.CollapseResult{}, fmt.Errorf("collapse returned %d: %s", resp.StatusCode, envdErrorBody(resp.Body))
 	}
 
 	var result envd.CollapseResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeEnvdResult(resp.Body, &result); err != nil {
 		return envd.CollapseResult{}, fmt.Errorf("decode collapse result: %w", err)
 	}
 
@@ -247,9 +284,7 @@ func (s *Sandbox) postEnvd(ctx context.Context, timeout time.Duration, path stri
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-
-		return fmt.Errorf("%s returned %d: %s", path, resp.StatusCode, utils.Truncate(string(body), 100))
+		return fmt.Errorf("%s returned %d: %s", path, resp.StatusCode, envdErrorBody(resp.Body))
 	}
 
 	return nil
@@ -326,9 +361,7 @@ func (s *Sandbox) CallEnvdUpgrade(ctx context.Context, localSrcPath, guestBinPat
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-
-		return false, fmt.Errorf("upgrade returned %d: %s", resp.StatusCode, utils.Truncate(string(body), 100))
+		return false, fmt.Errorf("upgrade returned %d: %s", resp.StatusCode, envdErrorBody(resp.Body))
 	}
 
 	// envd answered instead of exec'ing — no swap happened, exec not confirmed.
@@ -588,16 +621,11 @@ func (s *Sandbox) initEnvd(ctx context.Context, startType StartType, recordMetri
 		envdInitCalls.Add(ctx, 1, metric.WithAttributes(callAttributes(envdInitExitSuccess)...))
 	}
 
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read envd init response body: %w", err)
-	}
-
 	if response.StatusCode != http.StatusNoContent {
 		s.log().Error(ctx, "envd init request failed",
 			logger.WithEnvdVersion(s.Config.Envd.Version),
 			zap.Int("status_code", response.StatusCode),
-			zap.String("response_body", utils.Truncate(string(body), 100)),
+			zap.String("response_body", envdErrorBody(response.Body)),
 		)
 
 		return fmt.Errorf("unexpected status code: %d", response.StatusCode)
