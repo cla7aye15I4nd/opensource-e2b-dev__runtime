@@ -76,11 +76,17 @@ func NewOutboxJobTelemetry(tel *telemetry.Client, l logger.Logger) *OutboxJobTel
 
 // Work records the outcome from a defer, the way otelriver does: a panicking
 // worker is counted and the panic still reaches River, which is what turns
-// the job into an error River can retry or discard.
+// the job into an error River can retry or discard. Every line logged during
+// the attempt names the job and the attempt, so one job's retries can be read
+// together.
 func (t *OutboxJobTelemetry) Work(ctx context.Context, job *rivertype.JobRow, doInner func(context.Context) error) error {
 	var (
 		err      error
 		panicked = true
+	)
+	ctx = logger.ContextWithFields(ctx,
+		zap.Int64("outbox.job.id", job.ID),
+		zap.Int("outbox.job.attempt", job.Attempt),
 	)
 	ctx, current := withAttempt(ctx)
 	defer func() {
@@ -120,9 +126,7 @@ func (t *OutboxJobTelemetry) logOutcome(ctx context.Context, job *rivertype.JobR
 	fields := []zap.Field{
 		zap.String("event.name", "outbox.job."+outcome),
 		zap.String("outbox.job.kind", job.Kind),
-		zap.Int64("outbox.job.id", job.ID),
 		zap.String("outbox.job.queue", job.Queue),
-		zap.Int("outbox.job.attempt", job.Attempt),
 		zap.Int("outbox.job.max_attempts", job.MaxAttempts),
 		zap.String("outbox.job.outcome", outcome),
 	}

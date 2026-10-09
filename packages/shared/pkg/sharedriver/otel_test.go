@@ -180,6 +180,34 @@ func TestOutboxJobTelemetryLogsEveryAttemptThatDidNotComplete(t *testing.T) {
 	}
 }
 
+func TestEveryLineAnAttemptLogsNamesTheJobAndTheAttempt(t *testing.T) {
+	t.Parallel()
+
+	core, logged := observer.New(zapcore.DebugLevel)
+	l := logger.NewTracedLoggerFromCore(core)
+	job := &rivertype.JobRow{ID: 42, Kind: "apply_project_limits", Attempt: 2, MaxAttempts: 3}
+	failed := errors.New("control plane unreachable")
+	require.ErrorIs(t, NewOutboxJobTelemetry(nil, l).Work(t.Context(), job, func(ctx context.Context) error {
+		l.Info(ctx, "worker line")
+
+		return failed
+	}), failed)
+
+	require.Len(t, logged.All(), 2)
+	for _, entry := range logged.All() {
+		ids := 0
+		for _, field := range entry.Context {
+			if field.Key == "outbox.job.id" {
+				ids++
+			}
+		}
+		assert.Equal(t, 1, ids, entry.Message)
+		fields := entry.ContextMap()
+		assert.Equal(t, int64(42), fields["outbox.job.id"], entry.Message)
+		assert.Equal(t, int64(2), fields["outbox.job.attempt"], entry.Message)
+	}
+}
+
 func TestOutboxJobTelemetryCountsAPanicAndLetsItPropagate(t *testing.T) {
 	t.Parallel()
 
