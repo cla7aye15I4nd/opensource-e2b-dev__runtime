@@ -167,6 +167,13 @@ type Config struct {
 	// placement (max of CPU and pool). A node that reports no pool scores
 	// 0.5, so clusters without a pool should set this false and rank on CPU.
 	BestOfKHugepageMemory bool `env:"BEST_OF_K_HUGEPAGE_MEMORY" envDefault:"true"`
+
+	// OutboxMaxWorkers is how many River outbox jobs one API replica works at
+	// once.
+	OutboxMaxWorkers int `env:"OUTBOX_MAX_WORKERS" envDefault:"10"`
+	// OutboxBacklogInterval is how often the outbox backlog gauges are read
+	// from the database.
+	OutboxBacklogInterval time.Duration `env:"OUTBOX_BACKLOG_INTERVAL" envDefault:"30s"`
 }
 
 type FailureCondition string
