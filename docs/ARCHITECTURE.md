@@ -416,6 +416,12 @@ requires no updates. Run the db-migrator before deploying updated services to a
 database that lacks the table; no separate dashboard migration runner is needed.
 Rolling back this migration retains the table and its data.
 
+The same database holds River's job tables in the `river` schema, which a goose migration
+creates. The db-migrator applies the goose migrations and then River's own, under one advisory
+lock; `make migrate` runs it, because the goose CLI cannot apply River's. At startup the API and
+dashboard-api refuse a database whose goose version is older than the one they were built against,
+or whose River migrations are not current.
+
 A template and a paused-sandbox snapshot have the **same artifact shape** — a snapshot is just a
 new build whose memfile/rootfs are stored as diffs against the template it came from (diff chains
 are resolved through the `.header` files).
