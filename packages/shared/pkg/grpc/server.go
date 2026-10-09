@@ -140,12 +140,20 @@ func NewGRPCServer(tel *telemetry.Client, opts ...ServerOption) *grpc.Server {
 		o(&cfg)
 	}
 
-	logEvents := []logging.LoggableEvent{logging.StartCall, logging.FinishCall}
+	callEvents := []logging.LoggableEvent{logging.StartCall, logging.FinishCall}
+	logEvents := callEvents
 	if !cfg.withoutPayloadLogging {
 		logEvents = append(logEvents, logging.PayloadReceived, logging.PayloadSent)
 	}
 	logOpts := []logging.Option{
 		logging.WithLogOnEvents(logEvents...),
+		logging.WithLevels(logging.DefaultServerCodeToLevel),
+	}
+	// A stream logs a payload event per message, so one call carrying
+	// thousands of messages writes thousands of lines, enough to flood the
+	// node's log pipeline. Streams log their start and finish only.
+	streamLogOpts := []logging.Option{
+		logging.WithLogOnEvents(callEvents...),
 		logging.WithLevels(logging.DefaultServerCodeToLevel),
 	}
 
@@ -183,7 +191,7 @@ func NewGRPCServer(tel *telemetry.Client, opts ...ServerOption) *grpc.Server {
 
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		selector.StreamServerInterceptor(
-			logging.StreamServerInterceptor(logger.GRPCLogger(logger.L()), logOpts...),
+			logging.StreamServerInterceptor(logger.GRPCLogger(logger.L()), streamLogOpts...),
 			ignoredLoggingRoutes,
 		),
 	}
