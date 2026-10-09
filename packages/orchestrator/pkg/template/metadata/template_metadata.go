@@ -232,6 +232,11 @@ type Template struct {
 	// CPUTemplate only, so clearing the override boots BuildCPUTemplate again.
 	BuildCPUTemplate *cputemplate.Template `json:"build_cpu_template,omitempty"`
 
+	// VcpuCount is how many vCPUs the VM in this snapshot has, which a resume limits the sandbox
+	// below without trusting the request. 0 is a legacy snapshot whose stored original count must
+	// arrive as max_vcpus (or vcpu when the allocation is unchanged).
+	VcpuCount int64 `json:"vcpu_count,omitempty"`
+
 	// FilesystemOnly marks a snapshot that persists only the filesystem (no
 	// memory snapshot); resuming it must cold-boot (reboot) from the rootfs. The
 	// zero value (false) is a full memory snapshot, so pre-existing snapshots
@@ -300,8 +305,8 @@ func V1TemplateVersion() Template {
 
 // BasedOn derives the metadata of a build that starts FROM another template.
 //
-// Deliberately does NOT carry CmdlineArgs or the CPU templates: a new build resolves both flags
-// for its own team, and a cold boot must not replay a parent's settings.
+// Deliberately does NOT carry CmdlineArgs, CPU templates or VcpuCount: a new build resolves its
+// own settings and cold-boots a VM at its own size, which Pause records in its snapshot.
 func (t Template) BasedOn(
 	ft FromTemplate,
 ) Template {
@@ -327,6 +332,7 @@ func (t Template) NewVersionTemplate(metadata TemplateMetadata) Template {
 		Balloon:          t.Balloon,
 		CPUTemplate:      t.CPUTemplate,
 		BuildCPUTemplate: t.BuildCPUTemplate,
+		VcpuCount:        t.VcpuCount,
 	}
 }
 
@@ -342,6 +348,7 @@ func (t Template) SameVersionTemplate(metadata TemplateMetadata) Template {
 		Balloon:          t.Balloon,
 		CPUTemplate:      t.CPUTemplate,
 		BuildCPUTemplate: t.BuildCPUTemplate,
+		VcpuCount:        t.VcpuCount,
 	}
 }
 
@@ -349,6 +356,15 @@ func (t Template) SameVersionTemplate(metadata TemplateMetadata) Template {
 // mechanisms the device actually runs.
 func (t Template) WithBalloon(reporting, hinting bool) Template {
 	t.Balloon = &Balloon{Reporting: reporting, Hinting: hinting}
+
+	return t
+}
+
+// WithVcpuCount returns a copy of the template stamped with the vCPUs the VM has. A V1 file keeps only
+// its version, so the count is lost there; lifting the version would change the rootfs path a memory
+// snapshot was taken with, so a V1 lineage stays unrecorded and resumes by the request's maximum.
+func (t Template) WithVcpuCount(vcpus int64) Template {
+	t.VcpuCount = vcpus
 
 	return t
 }
@@ -367,6 +383,7 @@ func (t Template) WithPrefetch(prefetch *Prefetch) Template {
 		Balloon:          t.Balloon,
 		CPUTemplate:      t.CPUTemplate,
 		BuildCPUTemplate: t.BuildCPUTemplate,
+		VcpuCount:        t.VcpuCount,
 	}
 }
 

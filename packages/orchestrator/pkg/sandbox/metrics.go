@@ -20,8 +20,14 @@ const maxMetricsBodySize = 1 << 20
 type Metrics struct {
 	Timestamp int64 `json:"ts"` // Unix Timestamp in UTC
 
-	CPUCount       int64   `json:"cpu_count"`    // Total CPU cores
+	CPUCount       int64   `json:"cpu_count"`    // Online CPU cores
 	CPUUsedPercent float64 `json:"cpu_used_pct"` // Percent rounded to 2 decimal places
+
+	// Older envd omits these fields; CPUPossible can also be 0 if sysfs fails.
+	CPUPossible       int64 `json:"cpu_possible"`         // CPUs the guest can bring online
+	CPUTarget         int64 `json:"cpu_target"`           // Online count last requested, 0 when none was
+	CPUTargetAttempts int64 `json:"cpu_target_attempts"`  // Attempts at reaching CPUTarget since it was set
+	CPUWritePendingMs int64 `json:"cpu_write_pending_ms"` // How long a CPU online/offline write has been running; growing means stuck
 
 	MemTotal int64 `json:"mem_total"` // Total virtual memory in bytes
 	MemUsed  int64 `json:"mem_used"`  // Used virtual memory in bytes

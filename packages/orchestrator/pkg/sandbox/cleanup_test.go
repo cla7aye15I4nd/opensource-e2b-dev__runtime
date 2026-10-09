@@ -5,6 +5,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -293,4 +294,81 @@ func TestCleanupLateCallbackObservability(t *testing.T) {
 		require.Same(t, sentinel, field.Interface)
 	}
 	require.True(t, errorFieldFound)
+}
+
+func TestCgroupRemovalAcrossCleanupRegistration(t *testing.T) {
+	t.Parallel()
+
+	startErr := errors.New("startup failed")
+	removeErr := errors.New("remove failed")
+
+	for _, tc := range []struct {
+		name            string
+		registerRemoval bool
+		failStartup     bool
+		removeFails     bool
+		wantOrder       []string
+	}{
+		{name: "early failure", failStartup: true, removeFails: true, wantOrder: []string{"remove", "rootfs"}},
+		{name: "late failure", registerRemoval: true, failStartup: true, removeFails: true, wantOrder: []string{"stats", "remove", "rootfs"}},
+		{name: "successful startup", registerRemoval: true, wantOrder: []string{"stats", "remove", "rootfs"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+
+			cleanup := NewCleanup()
+			var order []string
+			addStep := func(name string) func(context.Context) error {
+				return func(ctx context.Context) error {
+					if ctx.Err() != nil {
+						t.Fatal("cleanup used the canceled startup context")
+					}
+					order = append(order, name)
+
+					return nil
+				}
+			}
+			cleanup.Add(ctx, addStep("rootfs"))
+			removeCalls := 0
+			remove := func(ctx context.Context) error {
+				if ctx.Err() != nil {
+					t.Fatal("cgroup removal used the canceled startup context")
+				}
+				removeCalls++
+				order = append(order, "remove")
+				if tc.removeFails {
+					return removeErr
+				}
+
+				return nil
+			}
+			registered := tc.registerRemoval
+			if registered {
+				cleanup.Add(ctx, remove)
+				cleanup.Add(ctx, addStep("stats"))
+			}
+
+			var result error
+			if tc.failStartup {
+				result = startErr
+			}
+			cleanupIfNotRegistered(ctx, &result, &registered, remove)
+			cleanupErr := cleanup.Run(ctx)
+			if removeCalls != 1 {
+				t.Fatalf("cgroup removal ran %d times, want once", removeCalls)
+			}
+			if !slices.Equal(order, tc.wantOrder) {
+				t.Fatalf("cleanup order = %v, want %v", order, tc.wantOrder)
+			}
+			if tc.failStartup && !errors.Is(result, startErr) {
+				t.Fatalf("startup error lost: %v", result)
+			}
+			if tc.removeFails && !errors.Is(errors.Join(result, cleanupErr), removeErr) {
+				t.Fatalf("cgroup removal error lost: result=%v cleanup=%v", result, cleanupErr)
+			}
+		})
+	}
 }

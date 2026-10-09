@@ -597,6 +597,11 @@ const (
 	// empty for none, so failures split by build cohort.
 	SandboxFCSnapshotLoadFailures CounterType = "orchestrator.sandbox.fc.snapshot_load.failures"
 
+	// SandboxVcpuLimit counts starts whose VM has more vCPUs than the sandbox uses, by how the CPU
+	// limit was applied (outcome=confined|cgroup_fallback|failed) on which path (path=boot|resume).
+	// cgroup_fallback leaves the VMM's own threads sharing the vCPU quota for the sandbox's life.
+	SandboxVcpuLimit CounterType = "orchestrator.sandbox.vcpu_limit"
+
 	// SandboxTemplateLegFaults counts a running sandbox's reads and writes that
 	// its template's backing device failed, by leg (memfile|rootfs): the
 	// memfile's page-fault data fetch, and the rootfs's NBD read, write and
@@ -660,12 +665,18 @@ const (
 	OrchestratorDiskAllocatedGaugeName   GaugeIntType = "orchestrator.sandbox.disk.allocated"
 
 	// Sandbox metrics
-	SandboxRamUsedGaugeName   GaugeIntType = "e2b.sandbox.ram.used"
-	SandboxRamTotalGaugeName  GaugeIntType = "e2b.sandbox.ram.total"
-	SandboxRamCacheGaugeName  GaugeIntType = "e2b.sandbox.ram.cache"
-	SandboxCpuTotalGaugeName  GaugeIntType = "e2b.sandbox.cpu.total"
-	SandboxDiskUsedGaugeName  GaugeIntType = "e2b.sandbox.disk.used"
-	SandboxDiskTotalGaugeName GaugeIntType = "e2b.sandbox.disk.total"
+	SandboxRamUsedGaugeName  GaugeIntType = "e2b.sandbox.ram.used"
+	SandboxRamTotalGaugeName GaugeIntType = "e2b.sandbox.ram.total"
+	SandboxRamCacheGaugeName GaugeIntType = "e2b.sandbox.ram.cache"
+	SandboxCpuTotalGaugeName GaugeIntType = "e2b.sandbox.cpu.total"
+	// CPU hotplug, reported by envd: how many CPUs the guest can online, how many the orchestrator
+	// asked for, how many tries that took, and how long a sysfs online/offline write has been stuck.
+	SandboxCpuPossibleGaugeName       GaugeIntType = "e2b.sandbox.cpu.possible"
+	SandboxCpuTargetGaugeName         GaugeIntType = "e2b.sandbox.cpu.target"
+	SandboxCpuTargetAttemptsGaugeName GaugeIntType = "e2b.sandbox.cpu.target_attempts"
+	SandboxCpuWritePendingGaugeName   GaugeIntType = "e2b.sandbox.cpu.write_pending"
+	SandboxDiskUsedGaugeName          GaugeIntType = "e2b.sandbox.disk.used"
+	SandboxDiskTotalGaugeName         GaugeIntType = "e2b.sandbox.disk.total"
 
 	// Template cache residency. mapping_bytes is the load-bearing one: a
 	// Header's compact Mapping is the largest long-lived allocation the
@@ -755,6 +766,7 @@ var counterDesc = map[CounterType]string{
 	SandboxFCBlockNoAvailBuffer: "Total Firecracker VMM block events where no virtqueue buffer was available",
 
 	SandboxFCSnapshotLoadFailures: "Total snapshot loads refused by Firecracker (reason=vcpu_msr|vcpu_other|missing_file|bad_request|unavailable|transport|timeout|canceled), by the digest of the CPU template the snapshot was built with (cpu_template)",
+	SandboxVcpuLimit:              "Starts whose VM has spare vCPUs, by how the CPU limit was applied (outcome=confined|cgroup_fallback|failed) on which path (path=boot|resume)",
 	SandboxTemplateLegFaults:      "Sandbox reads and writes its template's backing device failed (leg=memfile|rootfs)",
 
 	ApiRedisStoragePublisherPublished: "Total Redis PUBLISH calls completed by the storage publisher (result=success|failure)",
@@ -831,6 +843,7 @@ var counterUnits = map[CounterType]string{
 	SandboxFCBlockNoAvailBuffer: "{event}",
 
 	SandboxFCSnapshotLoadFailures: "{failure}",
+	SandboxVcpuLimit:              "{start}",
 	SandboxTemplateLegFaults:      "{fault}",
 
 	ApiRedisStoragePublisherPublished: "{notification}",
@@ -910,6 +923,10 @@ var gaugeIntDesc = map[GaugeIntType]string{
 	SandboxRamTotalGaugeName:             "Amount of RAM available to the sandbox.",
 	SandboxRamCacheGaugeName:             "Amount of RAM used by the page cache in the sandbox.",
 	SandboxCpuTotalGaugeName:             "Amount of CPU available to the sandbox.",
+	SandboxCpuPossibleGaugeName:          "Number of CPUs the sandbox guest can bring online.",
+	SandboxCpuTargetGaugeName:            "Number of online CPUs last requested from the sandbox guest, 0 when none was.",
+	SandboxCpuTargetAttemptsGaugeName:    "Attempts the sandbox guest made at reaching the requested CPU count.",
+	SandboxCpuWritePendingGaugeName:      "How long a CPU online or offline write has been running in the sandbox guest, 0 when none is.",
 	SandboxDiskUsedGaugeName:             "Amount of disk space used by the sandbox.",
 	SandboxDiskTotalGaugeName:            "Amount of disk space available to the sandbox.",
 	TeamSandboxRunningGaugeName:          "The number of sandboxes running for the team in the interval.",
@@ -944,6 +961,10 @@ var gaugeIntUnits = map[GaugeIntType]string{
 	SandboxRamTotalGaugeName:             "{By}",
 	SandboxRamCacheGaugeName:             "{By}",
 	SandboxCpuTotalGaugeName:             "{count}",
+	SandboxCpuPossibleGaugeName:          "{count}",
+	SandboxCpuTargetGaugeName:            "{count}",
+	SandboxCpuTargetAttemptsGaugeName:    "{attempt}",
+	SandboxCpuWritePendingGaugeName:      "ms",
 	SandboxDiskUsedGaugeName:             "{By}",
 	SandboxDiskTotalGaugeName:            "{By}",
 	TeamSandboxRunningGaugeName:          "{sandbox}",

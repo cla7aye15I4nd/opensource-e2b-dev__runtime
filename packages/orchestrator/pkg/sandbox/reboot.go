@@ -107,6 +107,15 @@ func rebootCPUTemplate(meta metadata.Template, override ldvalue.Value) (*cputemp
 	return tmpl, true, nil
 }
 
+// rebootMaxVcpus inherits recorded capacity only when no maximum was requested.
+func rebootMaxVcpus(requested, recorded int64) int64 {
+	if requested != 0 {
+		return requested
+	}
+
+	return recorded
+}
+
 // rebootAllowed reports whether a snapshot may be cold-booted: it is marked
 // filesystem-only, or the request explicitly demanded a filesystem boot of its
 // memory-inclusive snapshot, accepting crash-recovery semantics for the rootfs.
@@ -162,6 +171,9 @@ func (f *Factory) RebootSandbox(
 	if !rebootAllowed(meta, requestFilesystemBoot) {
 		return nil, fmt.Errorf("refusing to reboot build %s: not a filesystem-only snapshot and the request did not demand a filesystem boot", buildID)
 	}
+
+	// An explicit maximum may resize the fresh VM; omission preserves its recorded capacity.
+	config.ConfiguredVmVcpus = rebootMaxVcpus(config.ConfiguredVmVcpus, meta.VcpuCount)
 
 	// It becomes the running template, so the next pause stores what this boot applied.
 	override := f.featureFlags.JSONFlag(ctx, featureflags.RebootCPUTemplateOverride,

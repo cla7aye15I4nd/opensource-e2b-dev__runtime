@@ -73,12 +73,11 @@ const (
 	envdOpFsthaw   envdOp = "fsthaw"
 )
 
-// doRequestWithInfiniteRetries does a request with infinite retries until the context is done.
+// doRequestWithInfiniteRetries POSTs /init with infinite retries until the context is done.
 // The parent context must be bounded — by a deadline/timeout, or by a cancel
 // the caller races against sandbox liveness (WaitForEnvd, bestEffortEnvdReinit).
 func (s *Sandbox) doRequestWithInfiniteRetries(
 	ctx context.Context,
-	method,
 	address string,
 ) (*http.Response, int64, error) {
 	requestCount := int64(0)
@@ -92,6 +91,8 @@ func (s *Sandbox) doRequestWithInfiniteRetries(
 		DefaultWorkdir: utils.DerefOrDefault(s.Config.Envd.DefaultWorkdir, ""),
 		VolumeMounts:   s.convertMounts(s.Config.VolumeMounts),
 		CaBundle:       s.CABundle,
+		// A snapshot may resume with a different number of guest CPUs online.
+		CpuCount: s.guestCpuCount(),
 	}
 
 	for {
@@ -104,7 +105,7 @@ func (s *Sandbox) doRequestWithInfiniteRetries(
 
 		requestCount++
 		reqCtx, cancel := context.WithTimeout(ctx, s.internalConfig.EnvdInitRequestTimeout)
-		request, err := http.NewRequestWithContext(reqCtx, method, address, bytes.NewReader(body))
+		request, err := http.NewRequestWithContext(reqCtx, http.MethodPost, address, bytes.NewReader(body))
 		if err != nil {
 			cancel()
 
@@ -514,7 +515,7 @@ func (s *Sandbox) initEnvd(ctx context.Context, startType StartType, recordMetri
 
 	address := s.envdServerURL() + "/init"
 
-	response, count, err := s.doRequestWithInfiniteRetries(ctx, http.MethodPost, address)
+	response, count, err := s.doRequestWithInfiniteRetries(ctx, address)
 	if err != nil {
 		s.log().Error(ctx, "failed to init envd after retries",
 			logger.WithEnvdVersion(s.Config.Envd.Version),
@@ -565,6 +566,12 @@ func (s *Sandbox) initEnvd(ctx context.Context, startType StartType, recordMetri
 	if d := response.Header.Get("X-Envd-Defaults"); d != "" {
 		s.compareEnvdDefaults(ctx, d)
 	}
+	// What envd did with cpuCount (X-Envd-Cpus): a refused count must not pass silently.
+	if err := verifyEnvdCpuCount(response.Header.Get("X-Envd-Cpus"), s.guestCpuCount(), s.resolvedVmVcpus); err != nil {
+		telemetry.ReportError(ctx, "envd did not take the cpu count", err,
+			telemetry.WithSandboxID(s.Runtime.SandboxID),
+			telemetry.WithEnvdVersion(s.LiveEnvdVersion()))
+	}
 	// The memory protection configured on envd's cgroup chain (X-Envd-Memory). Read
 	// before the counters below so the cohort it derives labels them for this start.
 	if m := response.Header.Get(envdMemoryHeader); m != "" {
@@ -603,6 +610,56 @@ func (s *Sandbox) initEnvd(ctx context.Context, startType StartType, recordMetri
 	)
 
 	span.SetStatus(codes.Ok, fmt.Sprintf("envd init returned %d", response.StatusCode))
+
+	return nil
+}
+
+// guestCpuCount is the CPU count sent on /init: vcpu, or the VM's size when a resume allowed a smaller VM.
+func (s *Sandbox) guestCpuCount() int {
+	if s.resolvedVmVcpus > 0 && s.resolvedVmVcpus < s.Config.Vcpu {
+		return int(s.resolvedVmVcpus)
+	}
+
+	return int(s.Config.Vcpu)
+}
+
+// envdCpus is envd's X-Envd-Cpus report; its JSON tags match envd's cpuReport.
+type envdCpus struct {
+	Online   int    `json:"online"`
+	Possible int    `json:"possible"`
+	Target   int    `json:"target"`
+	Rejected string `json:"rejected"`
+}
+
+// The header is guest input: capped on the way in and bounded on the way into a log line.
+const (
+	envdCpusHeaderMaxBytes = 512
+	envdCpusRejectedMaxLen = 100
+)
+
+// errEnvdCannotSetCpus is an envd without CPU hotplug in a VM with spare vCPUs: they all stay online.
+var errEnvdCannotSetCpus = errors.New("envd sent no X-Envd-Cpus, so it cannot offline the spare vcpus")
+
+// verifyEnvdCpuCount checks envd's X-Envd-Cpus answer to the cpuCount sent on /init. No header is an
+// envd that predates CPU hotplug, which matters only when the VM has more vCPUs than the sandbox uses.
+func verifyEnvdCpuCount(header string, want int, vmVcpus int64) error {
+	if header == "" {
+		if vmVcpus > int64(want) {
+			return errEnvdCannotSetCpus
+		}
+
+		return nil
+	}
+	r, err := decodeEnvdHeader[envdCpus](header, envdCpusHeaderMaxBytes)
+	if err != nil {
+		return fmt.Errorf("unreadable X-Envd-Cpus: %w", err)
+	}
+	if r.Rejected != "" {
+		return fmt.Errorf("cpu count %d rejected, guest keeps %d of %d: %s", want, r.Target, r.Possible, utils.Truncate(r.Rejected, envdCpusRejectedMaxLen))
+	}
+	if r.Target != want {
+		return fmt.Errorf("cpu count %d sent, guest targets %d of %d", want, r.Target, r.Possible)
+	}
 
 	return nil
 }

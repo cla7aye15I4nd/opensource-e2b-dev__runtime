@@ -93,6 +93,13 @@ func (c *Cleanup) Run(ctx context.Context) error {
 	return c.error
 }
 
+// cleanupIfNotRegistered covers errors before a resource's normal cleanup callback is registered.
+func cleanupIfNotRegistered(ctx context.Context, result *error, registered *bool, f func(context.Context) error) {
+	if *result != nil && !*registered {
+		*result = errors.Join(*result, f(context.WithoutCancel(ctx)))
+	}
+}
+
 func (c *Cleanup) run(ctx context.Context) {
 	c.hasRun.Store(true)
 

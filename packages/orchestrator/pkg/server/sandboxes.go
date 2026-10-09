@@ -116,6 +116,19 @@ func filesystemBoot(meta metadata.Template, req *orchestrator.SandboxCreateReque
 	return meta.IsFilesystemOnly() || req.GetFilesystemBoot()
 }
 
+func validateColdBootVcpus(vcpu, maxVcpus, recordedVcpus int64) error {
+	// An explicit maximum replaces the snapshot's size; otherwise inherit it.
+	if maxVcpus == 0 {
+		maxVcpus = recordedVcpus
+	}
+	machineVcpus := max(vcpu, maxVcpus)
+	if !fc.ValidMachineVcpus(machineVcpus) {
+		return status.Errorf(codes.InvalidArgument, "cannot cold-boot a VM with %d vcpus on this host", machineVcpus)
+	}
+
+	return nil
+}
+
 // firecrackerSupports reports whether the sandbox's RUNNING Firecracker
 // carries a version-gated feature, per the given fcversion predicate. The
 // version is fixed at resume, so the answer cannot change under a running
@@ -156,6 +169,19 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	defer childSpan.End()
 
 	isResume := req.GetSandbox().GetSnapshot()
+	vcpu, maxVcpus := req.GetSandbox().GetVcpu(), req.GetSandbox().GetMaxVcpus()
+	if vcpu < 1 {
+		return nil, status.Errorf(codes.InvalidArgument, "vcpu %d must be at least 1", vcpu)
+	}
+	if vcpu > fc.MaxVcpus {
+		return nil, status.Errorf(codes.InvalidArgument, "vcpu %d is above the %d a VM can have", vcpu, fc.MaxVcpus)
+	}
+	if maxVcpus != 0 && maxVcpus < vcpu {
+		return nil, status.Errorf(codes.InvalidArgument, "vcpu %d must be 1..max_vcpus %d", vcpu, maxVcpus)
+	}
+	if maxVcpus > fc.MaxVcpus {
+		return nil, status.Errorf(codes.InvalidArgument, "max_vcpus %d is above the %d a VM can have", maxVcpus, fc.MaxVcpus)
+	}
 	// fsOnly reports the ARTIFACT kind (filesystem-only snapshot), mirroring the
 	// fs_only pause label, so the historical fs-only latency cohort stays pure.
 	// Combined with fs_boot_requested the population decomposes fully: the boot
@@ -298,10 +324,11 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 	config := sandbox.NewConfig(sandbox.Config{
 		BaseTemplateID: req.GetSandbox().GetBaseTemplateId(),
 
-		Vcpu:            req.GetSandbox().GetVcpu(),
-		RamMB:           req.GetSandbox().GetRamMb(),
-		TotalDiskSizeMB: req.GetSandbox().GetTotalDiskSizeMb(),
-		HugePages:       req.GetSandbox().GetHugePages(),
+		Vcpu:              req.GetSandbox().GetVcpu(),
+		ConfiguredVmVcpus: req.GetSandbox().GetMaxVcpus(),
+		RamMB:             req.GetSandbox().GetRamMb(),
+		TotalDiskSizeMB:   req.GetSandbox().GetTotalDiskSizeMb(),
+		HugePages:         req.GetSandbox().GetHugePages(),
 
 		Network: network,
 
@@ -339,6 +366,11 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 
 	fsOnly = meta.IsFilesystemOnly()
 	filesystemBooted = filesystemBoot(meta, req)
+	if filesystemBooted {
+		if err := validateColdBootVcpus(vcpu, maxVcpus, meta.VcpuCount); err != nil {
+			return nil, err
+		}
+	}
 
 	var sbx *sandbox.Sandbox
 	if filesystemBooted {
@@ -376,6 +408,16 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 			telemetry.ReportError(ctx, "sandbox files not found", err, telemetry.WithSandboxID(req.GetSandbox().GetSandboxId()))
 
 			return nil, status.Errorf(codes.FailedPrecondition, "sandbox files for '%s' not found", req.GetSandbox().GetSandboxId())
+		}
+		if errors.Is(err, sandbox.ErrVcpuExceedsSnapshot) {
+			logger.L().Warn(ctx, "resume refused: vcpu exceeds snapshot", zap.Error(err),
+				zap.Int64("vcpu", vcpu),
+				zap.Int64("max_vcpus", maxVcpus),
+				logger.WithSandboxID(runtime.SandboxID),
+				logger.WithBuildID(runtime.BuildID),
+				logger.WithTemplateID(runtime.TemplateID))
+
+			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 
 		err = errors.Join(err, context.Cause(ctx))
@@ -1854,6 +1896,9 @@ func (s *Server) snapshotAndCacheSandbox(
 	if err != nil {
 		return nil, fmt.Errorf("error snapshotting sandbox: %w", err)
 	}
+	// The prefetch writers rewrite the metafile from res.meta, so it must carry
+	// what Pause stamped (vCPU count, balloon mode), not the pre-pause copy.
+	meta = snapshot.Metadata
 
 	finishUpload, err := s.templateCache.AddSnapshot(
 		ctx,

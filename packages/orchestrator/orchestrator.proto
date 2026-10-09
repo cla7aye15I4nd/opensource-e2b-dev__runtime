@@ -25,6 +25,9 @@ message SandboxConfig {
 
   int64 vcpu = 11;
   int64 ram_mb = 12;
+  // VM capacity on cold boot; 0 defaults to max(vcpu, recorded snapshot capacity).
+  // Memory resumes use recorded capacity; legacy resizes must pass the original size.
+  int64 max_vcpus = 28;
 
   string team_id = 13;
   // Maximum length of the sandbox in Hours.

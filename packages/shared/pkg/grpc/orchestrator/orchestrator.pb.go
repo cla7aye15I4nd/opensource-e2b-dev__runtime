@@ -39,7 +39,10 @@ type SandboxConfig struct {
 	EnvdVersion string            `protobuf:"bytes,10,opt,name=envd_version,json=envdVersion,proto3" json:"envd_version,omitempty"`
 	Vcpu        int64             `protobuf:"varint,11,opt,name=vcpu,proto3" json:"vcpu,omitempty"`
 	RamMb       int64             `protobuf:"varint,12,opt,name=ram_mb,json=ramMb,proto3" json:"ram_mb,omitempty"`
-	TeamId      string            `protobuf:"bytes,13,opt,name=team_id,json=teamId,proto3" json:"team_id,omitempty"`
+	// VM capacity on cold boot; 0 defaults to max(vcpu, recorded snapshot capacity).
+	// Memory resumes use recorded capacity; legacy resizes must pass the original size.
+	MaxVcpus int64  `protobuf:"varint,28,opt,name=max_vcpus,json=maxVcpus,proto3" json:"max_vcpus,omitempty"`
+	TeamId   string `protobuf:"bytes,13,opt,name=team_id,json=teamId,proto3" json:"team_id,omitempty"`
 	// Maximum length of the sandbox in Hours.
 	MaxSandboxLength int64   `protobuf:"varint,14,opt,name=max_sandbox_length,json=maxSandboxLength,proto3" json:"max_sandbox_length,omitempty"`
 	TotalDiskSizeMb  int64   `protobuf:"varint,15,opt,name=total_disk_size_mb,json=totalDiskSizeMb,proto3" json:"total_disk_size_mb,omitempty"`
@@ -181,6 +184,13 @@ func (x *SandboxConfig) GetVcpu() int64 {
 func (x *SandboxConfig) GetRamMb() int64 {
 	if x != nil {
 		return x.RamMb
+	}
+	return 0
+}
+
+func (x *SandboxConfig) GetMaxVcpus() int64 {
+	if x != nil {
+		return x.MaxVcpus
 	}
 	return 0
 }
@@ -1799,7 +1809,7 @@ var File_orchestrator_proto protoreflect.FileDescriptor
 
 const file_orchestrator_proto_rawDesc = "" +
 	"\n" +
-	"\x12orchestrator.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb1\n" +
+	"\x12orchestrator.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xce\n" +
 	"\n" +
 	"\rSandboxConfig\x12\x1f\n" +
 	"\vtemplate_id\x18\x01 \x01(\tR\n" +
@@ -1817,7 +1827,8 @@ const file_orchestrator_proto_rawDesc = "" +
 	"\fenvd_version\x18\n" +
 	" \x01(\tR\venvdVersion\x12\x12\n" +
 	"\x04vcpu\x18\v \x01(\x03R\x04vcpu\x12\x15\n" +
-	"\x06ram_mb\x18\f \x01(\x03R\x05ramMb\x12\x17\n" +
+	"\x06ram_mb\x18\f \x01(\x03R\x05ramMb\x12\x1b\n" +
+	"\tmax_vcpus\x18\x1c \x01(\x03R\bmaxVcpus\x12\x17\n" +
 	"\ateam_id\x18\r \x01(\tR\x06teamId\x12,\n" +
 	"\x12max_sandbox_length\x18\x0e \x01(\x03R\x10maxSandboxLength\x12+\n" +
 	"\x12total_disk_size_mb\x18\x0f \x01(\x03R\x0ftotalDiskSizeMb\x12\x1a\n" +

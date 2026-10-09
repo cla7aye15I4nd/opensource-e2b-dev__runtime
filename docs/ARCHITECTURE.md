@@ -245,6 +245,20 @@ Key mechanisms (all under `pkg/sandbox/`):
 - **Firecracker** (`fc/`): each sandbox is one Firecracker process in its own cgroup and network
   namespace. The FC HTTP API (unix socket) configures machine, drives, network, and snapshots.
   Guest metadata (sandbox ID, envd access token hash) is passed via MMDS.
+  A sandbox may use fewer CPUs than its VM has (`SandboxConfig.max_vcpus` above `vcpu`): the VM
+  is created with `max_vcpus` vCPUs, a boot puts `maxcpus=<vcpu>` on the kernel command line, and
+  the `fc_vcpu` threads are held to `vcpu` CPUs by a `cpu.max` quota in a threaded `vcpu` child of
+  the sandbox cgroup, so the VMM's own threads stay outside it. The quota is in place before the
+  guest runs an instruction: a boot limits the whole cgroup until the vCPU threads exist and then
+  moves the limit onto them; a resume confines the paused threads before the VM resumes, falls
+  back to the whole cgroup, and fails if neither holds. The snapshot's metadata records the VM's
+  vCPU count (`vcpu_count`, stamped at build and on every pause), so a resume limits below it
+  without trusting the request or discovering capacity from cgroup threads. A legacy snapshot
+  carries its stored original vCPU count as `max_vcpus`; if unavailable, it may only resume at its
+  unchanged `vcpu`.
+  `/init` carries the count as `cpuCount`
+  so envd onlines or offlines guest CPUs to match and reports the outcome on `X-Envd-Cpus` and
+  `/metrics`.
 - **Lazy memory / UFFD** (`uffd/`): on resume, Firecracker restores the VM without loading
   memory; a userfaultfd handler serves page faults directly from the template's memfile, so only
   touched pages are read. An optional prefetcher warms known-hot pages.
@@ -297,7 +311,7 @@ The agent inside every VM (started by systemd very early in boot), port 49983, c
   tag are unaffected: they stay in envd's own cgroup, which no freeze covers.
 - **Filesystem service** (`spec/filesystem/filesystem.proto`): stat/list/make/move/remove/watch.
 - **REST**: `/health`, `/metrics`, `/envs`, `/files` upload/download, `/init` (orchestrator pushes
-  env vars, access token, metadata after boot/resume), `/upgrade` (live self-upgrade, below),
+  env vars, access token, metadata and the online CPU count after boot/resume), `/upgrade` (live self-upgrade, below),
   freeze/thaw hooks used during pause.
 - **Public vs. control-plane routes**: the control routes (`/init`, `/upgrade`, and the freeze/thaw
   hooks) are marked `x-internal: true` in `spec/envd.yaml`, and `/upgrade` — which the spec does not
