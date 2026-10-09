@@ -209,6 +209,55 @@ func TestAddKillReason(t *testing.T) {
 	})
 }
 
+func TestAddPauseMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		filesystemOnly bool
+		want           string
+	}{
+		{"full snapshot", false, "full"},
+		{"filesystem-only snapshot", true, "filesystem"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			eventData := map[string]any{executionEventDataKey: map[string]any{}}
+			addPauseMode(eventData, tt.filesystemOnly)
+
+			assert.Equal(t, tt.want, eventData["pause_mode"])
+			assert.Contains(t, eventData, executionEventDataKey, "existing keys are kept")
+		})
+	}
+}
+
+func TestAddResumeMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		filesystemBooted bool
+		want             string
+	}{
+		{"memory restored", false, "restore"},
+		{"cold-booted from the filesystem", true, "reboot"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			eventData := map[string]any{}
+			addResumeMode(eventData, tt.filesystemBooted)
+
+			assert.Equal(t, tt.want, eventData["resume_mode"])
+		})
+	}
+}
+
 func TestRecordSandboxKill(t *testing.T) {
 	t.Parallel()
 

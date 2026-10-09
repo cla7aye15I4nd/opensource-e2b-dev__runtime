@@ -94,6 +94,15 @@ const (
 	// through every thaw attempt (ErrSandboxLost tagged ErrRootfsThawFailed),
 	// so the orchestrator tore down a guest that ran but could not write.
 	killReasonThawFailed = "thaw_failed"
+
+	// pause_mode on paused events: what the snapshot holds. The values are the
+	// SDK's snapshot mode, so a customer reads back the mode they passed.
+	pauseModeFull       = "full"
+	pauseModeFilesystem = "filesystem"
+	// resume_mode on resumed events: how the sandbox started, in the values of
+	// the SDK's onResume option.
+	resumeModeRestore = "restore"
+	resumeModeReboot  = "reboot"
 )
 
 // lostSandboxKillReason names the kill behind an ErrSandboxLost from the
@@ -471,12 +480,14 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 		schedulingMetadata = provider.SchedulingMetadata(ctx)
 	}
 
+	teamID, buildId, eventsTTLDays, eventData := s.prepareSandboxEventData(ctx, sbx)
+
 	eventType := events.SandboxCreatedEventPair
 	if req.GetSandbox().GetSnapshot() {
 		eventType = events.SandboxResumedEventPair
+		addResumeMode(eventData, filesystemBooted)
 	}
 
-	teamID, buildId, eventsTTLDays, eventData := s.prepareSandboxEventData(ctx, sbx)
 	s.publishEventAsync(
 		ctx,
 		teamID,
@@ -860,6 +871,31 @@ func addKillReason(eventData map[string]any, killReason string) {
 	eventData["kill_reason"] = killReason
 }
 
+// addPauseMode records on paused events whether the snapshot is full (memory
+// and filesystem) or filesystem-only, whose resume cold-boots. Every paused
+// event carries the key, so its absence means the event predates it.
+func addPauseMode(eventData map[string]any, filesystemOnly bool) {
+	pauseMode := pauseModeFull
+	if filesystemOnly {
+		pauseMode = pauseModeFilesystem
+	}
+
+	eventData["pause_mode"] = pauseMode
+}
+
+// addResumeMode records on resumed events the boot path that actually ran:
+// restore when memory was restored, reboot when the sandbox cold-booted from
+// its filesystem, either because the snapshot has no memory or because the
+// resume asked to drop it.
+func addResumeMode(eventData map[string]any, filesystemBooted bool) {
+	resumeMode := resumeModeRestore
+	if filesystemBooted {
+		resumeMode = resumeModeReboot
+	}
+
+	eventData["resume_mode"] = resumeMode
+}
+
 // recordSandboxKill increments the kill counter with a bounded reason label.
 func recordSandboxKill(ctx context.Context, counter metric.Int64Counter, killReason string) {
 	if killReason == "" {
@@ -1121,6 +1157,7 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 
 	teamID, buildId, eventsTTLDays, eventData := s.prepareSandboxEventData(ctx, sbx)
 	eventData[executionEventDataKey] = s.getSandboxExecutionData(sbx)
+	addPauseMode(eventData, res.filesystemOnly)
 
 	eventType := events.SandboxPausedEventPair
 	s.publishEventAsync(
