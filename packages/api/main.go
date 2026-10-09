@@ -49,6 +49,7 @@ import (
 	sharedmiddleware "github.com/e2b-dev/infra/packages/shared/pkg/middleware"
 	metricsMiddleware "github.com/e2b-dev/infra/packages/shared/pkg/middleware/otel/metrics"
 	tracingMiddleware "github.com/e2b-dev/infra/packages/shared/pkg/middleware/otel/tracing"
+	"github.com/e2b-dev/infra/packages/shared/pkg/removedroutes"
 	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
 	sharedutils "github.com/e2b-dev/infra/packages/shared/pkg/utils"
 )
@@ -177,18 +178,11 @@ func NewGinServer(ctx context.Context, config cfg.Config, tel *telemetry.Client,
 	// Removed routes are registered before the OpenAPI validator middleware
 	// (which rejects paths missing from the spec) so old clients get a clear
 	// 410 instead of a 404.
-	gone := func(msg string) gin.HandlerFunc {
-		return func(c *gin.Context) { apierrors.SendAPIStoreError(c, http.StatusGone, msg) }
+	for _, route := range removedroutes.Routes {
+		r.Handle(route.Method, route.GinPath(), func(c *gin.Context) {
+			apierrors.SendAPIStoreError(c, http.StatusGone, route.Message)
+		})
 	}
-	accessTokensGone := gone("E2B_ACCESS_TOKEN is deprecated and no longer supported. Use an API key (E2B_API_KEY) instead. See https://e2b.dev/docs/migration/access-token-deprecation")
-	r.POST("/access-tokens", accessTokensGone)
-	r.DELETE("/access-tokens/:accessTokenID", accessTokensGone)
-
-	templateBuildV1Gone := gone("The v1 template build API is no longer supported. Upgrade the CLI and migrate to v2 templates. See https://e2b.dev/docs/template/migration-v2")
-	r.POST("/templates", templateBuildV1Gone)
-	r.POST("/templates/:templateID", templateBuildV1Gone)
-	r.POST("/templates/:templateID/builds/:buildID", templateBuildV1Gone)
-	r.POST("/v2/templates", templateBuildV1Gone)
 
 	// The spec does not declare its own document, so it is registered before
 	// the validator, like the removed routes.

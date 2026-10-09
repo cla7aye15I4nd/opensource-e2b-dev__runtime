@@ -101,7 +101,7 @@ func (s *AuthService) ValidateAPIKey(ctx context.Context, ginCtx *gin.Context, a
 	if err != nil {
 		return nil, &APIError{
 			Err:       fmt.Errorf("failed to verify api key: %w", err),
-			ClientMsg: "Invalid API key format",
+			ClientMsg: keys.InvalidAPIKeyFormat,
 			Code:      http.StatusUnauthorized,
 		}
 	}
@@ -121,7 +121,7 @@ func (s *AuthService) ValidateAPIKey(ctx context.Context, ginCtx *gin.Context, a
 		if dberrors.IsNotFoundError(err) {
 			return nil, &APIError{
 				Err:       fmt.Errorf("no team for the api key: %w", err),
-				ClientMsg: "Cannot get the team for the given API key",
+				ClientMsg: keys.UnknownAPIKey,
 				Code:      http.StatusUnauthorized,
 			}
 		}
