@@ -147,7 +147,6 @@ func NewGRPCServer(tel *telemetry.Client, opts ...ServerOption) *grpc.Server {
 	logOpts := []logging.Option{
 		logging.WithLogOnEvents(logEvents...),
 		logging.WithLevels(logging.DefaultServerCodeToLevel),
-		logging.WithFieldsFromContext(logging.ExtractFields),
 	}
 
 	ignoredLoggingRoutes := logger.WithoutRoutes(
