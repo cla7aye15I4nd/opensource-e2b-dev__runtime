@@ -389,7 +389,8 @@ audience matching while issuer, signature, and temporal-claim verification remai
 
 The `/v1/management` operations are the cluster's half of a contract the workspace residency owns:
 project upsert (a project is a `public.teams` row created from a caller-supplied UUID; the tier is
-assigned once at creation from a local default and no push moves it; a changed slug renames the project, and nothing else follows it), per-member projection,
+assigned once at creation from a local default and no push moves it; an optional cluster ID is
+stored on the project, with omission preserving its current assignment; a changed slug renames the project, and nothing else follows it), per-member projection,
 and limit sync (into `project_limits`, which `team_limits` reads in preference to `tiers`). All are
 idempotent, because the caller is level-triggered and retries. `PUT
 /v1/management/projects/{projectID}/members/{userID}` applies the desired presence for one user,

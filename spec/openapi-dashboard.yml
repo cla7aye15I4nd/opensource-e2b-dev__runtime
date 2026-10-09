@@ -1161,9 +1161,9 @@ components:
     ManagementProjectUpsertRequest:
       type: object
       description: >-
-        The properties of a project this side stores. Every one is synchronized
-        by the caller and sent on every push, so a reconcile is a complete
-        statement of the project rather than a patch.
+        The properties of a project this side stores. Name, slug and email are
+        synchronized on every push. The optional cluster assignment is preserved
+        when omitted.
 
 
         A project's tier is not among them. It is assigned once, at creation,
@@ -1172,6 +1172,10 @@ components:
         precedence over the tier anyway.
       required: [name, slug, email]
       properties:
+        cluster_id:
+          type: string
+          format: uuid
+          description: Cluster assignment to synchronize. Omission preserves the existing assignment.
         name:
           type: string
           minLength: 1
