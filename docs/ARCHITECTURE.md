@@ -117,6 +117,9 @@ The control-plane entry point (Gin, OpenAPI-generated from `spec/openapi.yml`, p
   already-matched operation and stores the API group directly in Gin's context. The rate limiter
   reads that group and maps it to a field in the authenticated team's limits. Grouped operations
   require team-identifying authentication; public operations do not populate an API group.
+  The `list` group uses `api_team_rps_list`; the `delete` group uses `api_team_rps_delete` only
+  for sandbox and template deletion. Other DELETE operations are ungrouped.
+  Delete rates default to zero until configured.
   A group's rate is one of the team's limits and resolves with the rest of them through the
   `team_limits` view, which authentication caches; it has no source of its own.
   A positive rate sets both requests per second and burst capacity. Redis enforces a separate
@@ -125,8 +128,12 @@ The control-plane entry point (Gin, OpenAPI-generated from `spec/openapi.yml`, p
   and `Retry-After` headers. Ungrouped operations and unconfigured rates bypass group limiting;
   Redis failures are logged and counted while requests proceed.
   V1 route limits from `rate-limit-config` are always enforced first. For requests that pass V1,
-  the LaunchDarkly `rate-limit-v2-mode` flag controls the additional group-limit check:
-  `disabled` (the default) and unknown modes skip V2, `shadow` observes V2 decisions while
+  LaunchDarkly's `rate-limit-v2-mode` is the master switch for all V2 checks, and
+  `rate-limit-delete-mode` can further restrict delete checks. Both default to `disabled`;
+  missing, invalid, or unknown modes are treated as disabled. Deletes skip V2 if either flag is
+  disabled and enforce only when both are enabled. If both are active and either is `shadow`,
+  deletes run in shadow mode. Lists follow the global mode.
+  The groups use the same limiter logic: `shadow` observes V2 decisions while
   preserving V1 headers, and `enabled` also enforces V2. Ungrouped operations, unconfigured V2
   rates, and V2 Redis errors retain V1 enforcement. A rejection reports the rejecting limiter's
   headers; when both checks allow a request in enabled mode, V2 supplies the rate-limit headers.

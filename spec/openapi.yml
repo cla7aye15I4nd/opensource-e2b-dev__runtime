@@ -3278,6 +3278,7 @@ paths:
 
     delete:
       summary: Kill sandbox
+      x-api-group: delete
       description: Kill a sandbox
       tags: [sandboxes]
       security:
@@ -3979,6 +3980,7 @@ paths:
           $ref: "#/components/responses/500"
     delete:
       summary: Delete template
+      x-api-group: delete
       description: Delete a template
       tags: [templates]
       security:

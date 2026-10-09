@@ -104,6 +104,8 @@ const (
 
 var RateLimitV2Mode = NewStringFlag("rate-limit-v2-mode", APIGroupRateLimitDisabled)
 
+var RateLimitDeleteMode = NewStringFlag("rate-limit-delete-mode", APIGroupRateLimitDisabled)
+
 type BoolFlag struct {
 	name     string
 	fallback bool
