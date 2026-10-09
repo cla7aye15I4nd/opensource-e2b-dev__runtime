@@ -844,6 +844,11 @@ sequenceDiagram
     API->>API: mark build ready in Postgres
 ```
 
+The project provisioning system enqueues a base build when a cluster-backed project becomes active.
+The job registers and starts an ordinary base build, then completes when the API accepts it.
+A failed delivery may rebuild on retry; regional build tracking owns completion and timeouts.
+Ordinary projects do not enqueue this job.
+
 Builds are **layered** (`pkg/template/build/phases/`): base → user → one layer per recipe step →
 resize disk → finalize → optimize. Each layer is hashed and cached, so rebuilds only re-run changed
 steps. Resize disk grows the quiescent rootfs on the host; the other non-cached phases run in a real
