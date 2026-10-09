@@ -24,18 +24,7 @@ RUN --mount=type=cache,target=/go/pkg/mod cd /build/shared && go mod download &&
 # Copy source code
 WORKDIR /build
 
-COPY ./auth/pkg ./auth/pkg
-COPY ./clickhouse/pkg ./clickhouse/pkg
-COPY ./shared/pkg ./shared/pkg
-COPY ./db/*.go ./db/
-COPY ./db/migrations ./db/migrations
-COPY ./db/client ./db/client
-COPY ./db/queries ./db/queries
-COPY ./db/pkg ./db/pkg
-
-COPY ./api/internal ./api/internal
-COPY ./api/main.go ./api/main.go
-COPY ./api/Makefile ./api/Makefile
+COPY . .
 
 WORKDIR /build/api
 
