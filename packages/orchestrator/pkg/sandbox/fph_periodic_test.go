@@ -717,7 +717,10 @@ func TestRunPeriodicHintingLoop_UnresponsiveGuestBacksOffAndRecovers(t *testing.
 	assert.True(t, s.hintUnresponsive.Load())
 
 	recovered.Store(true)
-	require.Eventually(t, func() bool { return !s.hintUnresponsive.Load() }, 5*time.Second, 5*time.Millisecond, "a completed run releases the latch")
+	// Wait on the record, not the flag: the loop clears the flag before recording
+	// the release, so the flag alone can be observed before the record lands.
+	require.Eventually(t, func() bool { return o.has("released") }, 5*time.Second, 5*time.Millisecond, "a completed run releases the latch")
+	assert.False(t, s.hintUnresponsive.Load())
 	assert.Equal(t, 1, o.count("released"))
 	cancel()
 	<-done
