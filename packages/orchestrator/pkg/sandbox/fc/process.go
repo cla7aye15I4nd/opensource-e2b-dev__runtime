@@ -39,6 +39,8 @@ import (
 
 var tracer = otel.Tracer("github.com/e2b-dev/infra/packages/orchestrator/pkg/sandbox/fc")
 
+var errFirecrackerExitedBeforeSocketReadiness = errors.New("fc process exited before API socket became ready")
+
 // fcLogFilter wraps an io.Writer and suppresses Firecracker FlushMetrics
 // request/response log line pairs that fire every few seconds and create
 // excessive noise. The stateful flag is safe because Firecracker's API server
@@ -326,13 +328,29 @@ func (p *Process) configure(
 		defer stderrWriter.Close()
 		defer stdoutWriter.Close()
 
-		if exitErr := p.handleExit(ctx, p.cmd.Wait()); exitErr != nil {
-			cancelStart(exitErr)
+		exitErr := p.handleExit(ctx, p.cmd.Wait())
+		// Exit intentionally resolves cleanly for exit 0 and SIGTERM/SIGKILL,
+		// but every reaped process still makes API-socket startup impossible.
+		if exitErr == nil {
+			exitErr = errFirecrackerExitedBeforeSocketReadiness
 		}
+		cancelStart(exitErr)
 	}()
 
 	// Wait for the FC process to start so we can use FC API
 	err = socket.Wait(startCtx, p.firecrackerSocketPath)
+	if err == nil {
+		// The socket file and process exit can become observable together. Do
+		// not publish readiness for a process the wait owner already reaped.
+		select {
+		case <-p.Exit.Done():
+			err = p.Exit.Error()
+			if err == nil {
+				err = errFirecrackerExitedBeforeSocketReadiness
+			}
+		default:
+		}
+	}
 	if err != nil {
 		errMsg := fmt.Errorf("error waiting for fc socket: %w", err)
 
