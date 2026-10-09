@@ -30,6 +30,7 @@ import (
 	"github.com/e2b-dev/infra/packages/api/internal/cfg"
 	"github.com/e2b-dev/infra/packages/api/internal/handlers"
 	customMiddleware "github.com/e2b-dev/infra/packages/api/internal/middleware"
+	"github.com/e2b-dev/infra/packages/api/internal/middleware/idempotency"
 	"github.com/e2b-dev/infra/packages/api/internal/middleware/ratelimit"
 	"github.com/e2b-dev/infra/packages/api/internal/oauth"
 	"github.com/e2b-dev/infra/packages/api/internal/openapispec"
@@ -240,6 +241,7 @@ func NewGinServer(ctx context.Context, config cfg.Config, tel *telemetry.Client,
 	// EnforceBlockedTeam. Must run after auth (which populates team info on
 	// the gin context) and before the handlers.
 	r.Use(customMiddleware.EnforceBlockedTeam())
+	r.Use(idempotency.Middleware(redisClient, ff)) //nolint:contextcheck // Gin middleware gets context from the request.
 
 	// We now register our store above as the handler for the interface
 	api.RegisterHandlersWithOptions(r, apiStore, api.GinServerOptions{

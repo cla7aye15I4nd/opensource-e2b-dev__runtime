@@ -523,7 +523,7 @@ type Error struct {
 	// Code Error code
 	Code int32 `json:"code"`
 
-	// ErrorCode Machine-readable semantic error code. Not a closed set; initial values: sandbox_capacity_unavailable, sandbox_placement_timeout, sandbox_no_compatible_node, sandbox_create_failed, internal_server_error, secret_limit_reached.
+	// ErrorCode Machine-readable semantic error code. Not a closed set; initial values: sandbox_capacity_unavailable, sandbox_placement_timeout, sandbox_no_compatible_node, sandbox_create_failed, internal_server_error, secret_limit_reached, idempotency_request_mismatch, idempotency_in_progress, idempotency_outcome_unknown.
 	ErrorCode *string `json:"error_code,omitempty"`
 
 	// Message Error
@@ -2190,6 +2190,18 @@ type GetV2SandboxesParams struct {
 	Limit *PaginationLimit `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// PostV2SandboxesParams defines parameters for PostV2Sandboxes.
+type PostV2SandboxesParams struct {
+	// IdempotencyKey Optional team-scoped key for retrying sandbox creation. Use 1 to 255 lowercase ASCII
+	// letters or digits (a-z, 0-9). When idempotency is enabled, matching retries replay the original
+	// status and body, including errors, for the retention period.
+	// Different request parameters return 409 with error_code idempotency_request_mismatch.
+	// An in-progress request returns 409 with error_code idempotency_in_progress; an unknown
+	// outcome returns 422 with error_code idempotency_outcome_unknown. These retries do not execute the request again.
+	// Retries do not extend retention. After the key expires, it can start a new creation.
+	IdempotencyKey *string `json:"Idempotency-Key,omitempty"`
+}
+
 // GetV2SandboxesSandboxIDLogsParams defines parameters for GetV2SandboxesSandboxIDLogs.
 type GetV2SandboxesSandboxIDLogsParams struct {
 	// Cursor Starting timestamp of the logs that should be returned in milliseconds
@@ -3198,7 +3210,7 @@ type ClientInterface interface {
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with POST /v2/sandboxes (the `PostV2Sandboxes` operationId).
-	PostV2SandboxesWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+	PostV2SandboxesWithBody(ctx context.Context, params *PostV2SandboxesParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// PostV2Sandboxes Create sandbox (v2)
 	//
@@ -3207,7 +3219,7 @@ type ClientInterface interface {
 	// Takes a body of the `application/json` content type.
 	//
 	// Corresponds with POST /v2/sandboxes (the `PostV2Sandboxes` operationId).
-	PostV2Sandboxes(ctx context.Context, body PostV2SandboxesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+	PostV2Sandboxes(ctx context.Context, params *PostV2SandboxesParams, body PostV2SandboxesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// PostV2SandboxesSandboxIDConnectWithBody Connect sandbox (v2)
 	//
@@ -4853,8 +4865,8 @@ func (c *Client) GetV2Sandboxes(ctx context.Context, params *GetV2SandboxesParam
 // Takes any type of body and a specified content type.
 //
 // Corresponds with POST /v2/sandboxes (the `PostV2Sandboxes` operationId).
-func (c *Client) PostV2SandboxesWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPostV2SandboxesRequestWithBody(c.Server, contentType, body)
+func (c *Client) PostV2SandboxesWithBody(ctx context.Context, params *PostV2SandboxesParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostV2SandboxesRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -4872,8 +4884,8 @@ func (c *Client) PostV2SandboxesWithBody(ctx context.Context, contentType string
 // Takes a body of the `application/json` content type.
 //
 // Corresponds with POST /v2/sandboxes (the `PostV2Sandboxes` operationId).
-func (c *Client) PostV2Sandboxes(ctx context.Context, body PostV2SandboxesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPostV2SandboxesRequest(c.Server, body)
+func (c *Client) PostV2Sandboxes(ctx context.Context, params *PostV2SandboxesParams, body PostV2SandboxesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostV2SandboxesRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -8511,18 +8523,18 @@ func NewGetV2SandboxesRequest(server string, params *GetV2SandboxesParams) (*htt
 }
 
 // NewPostV2SandboxesRequest calls the generic PostV2Sandboxes builder with application/json body
-func NewPostV2SandboxesRequest(server string, body PostV2SandboxesJSONRequestBody) (*http.Request, error) {
+func NewPostV2SandboxesRequest(server string, params *PostV2SandboxesParams, body PostV2SandboxesJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewPostV2SandboxesRequestWithBody(server, "application/json", bodyReader)
+	return NewPostV2SandboxesRequestWithBody(server, params, "application/json", bodyReader)
 }
 
 // NewPostV2SandboxesRequestWithBody constructs an http.Request for the PostV2Sandboxes method, with any body, and a specified content type
-func NewPostV2SandboxesRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+func NewPostV2SandboxesRequestWithBody(server string, params *PostV2SandboxesParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -8546,6 +8558,21 @@ func NewPostV2SandboxesRequestWithBody(server string, contentType string, body i
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.IdempotencyKey != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithOptions("simple", false, "Idempotency-Key", *params.IdempotencyKey, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Idempotency-Key", headerParam0)
+		}
+
+	}
 
 	return req, nil
 }
@@ -9873,7 +9900,7 @@ type ClientWithResponsesInterface interface {
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /v2/sandboxes (the `PostV2Sandboxes` operationId).
-	PostV2SandboxesWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostV2SandboxesResponse, error)
+	PostV2SandboxesWithBodyWithResponse(ctx context.Context, params *PostV2SandboxesParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostV2SandboxesResponse, error)
 
 	// PostV2SandboxesWithResponse Create sandbox (v2)
 	//
@@ -9882,7 +9909,7 @@ type ClientWithResponsesInterface interface {
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /v2/sandboxes (the `PostV2Sandboxes` operationId).
-	PostV2SandboxesWithResponse(ctx context.Context, body PostV2SandboxesJSONRequestBody, reqEditors ...RequestEditorFn) (*PostV2SandboxesResponse, error)
+	PostV2SandboxesWithResponse(ctx context.Context, params *PostV2SandboxesParams, body PostV2SandboxesJSONRequestBody, reqEditors ...RequestEditorFn) (*PostV2SandboxesResponse, error)
 
 	// PostV2SandboxesSandboxIDConnectWithBodyWithResponse Connect sandbox (v2)
 	//
@@ -15095,6 +15122,10 @@ type PostV2SandboxesResponse struct {
 	JSON400 *N400
 	// JSON401 the response for an HTTP 401 `application/json` response
 	JSON401 *N401
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Error
+	// JSON422 the response for an HTTP 422 `application/json` response
+	JSON422 *Error
 	// JSON429 the response for an HTTP 429 `application/json` response
 	JSON429 *N429
 	// JSON500 the response for an HTTP 500 `application/json` response
@@ -15120,6 +15151,16 @@ func (r PostV2SandboxesResponse) GetJSON400() *N400 {
 // GetJSON401 returns the response for an HTTP 401 `application/json` response
 func (r PostV2SandboxesResponse) GetJSON401() *N401 {
 	return r.JSON401
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostV2SandboxesResponse) GetJSON409() *Error {
+	return r.JSON409
+}
+
+// GetJSON422 returns the response for an HTTP 422 `application/json` response
+func (r PostV2SandboxesResponse) GetJSON422() *Error {
+	return r.JSON422
 }
 
 // GetJSON429 returns the response for an HTTP 429 `application/json` response
@@ -17248,8 +17289,8 @@ func (c *ClientWithResponses) GetV2SandboxesWithResponse(ctx context.Context, pa
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
 // Corresponds with POST /v2/sandboxes (the `PostV2Sandboxes` operationId).
-func (c *ClientWithResponses) PostV2SandboxesWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostV2SandboxesResponse, error) {
-	rsp, err := c.PostV2SandboxesWithBody(ctx, contentType, body, reqEditors...)
+func (c *ClientWithResponses) PostV2SandboxesWithBodyWithResponse(ctx context.Context, params *PostV2SandboxesParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostV2SandboxesResponse, error) {
+	rsp, err := c.PostV2SandboxesWithBody(ctx, params, contentType, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -17263,8 +17304,8 @@ func (c *ClientWithResponses) PostV2SandboxesWithBodyWithResponse(ctx context.Co
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
 // Corresponds with POST /v2/sandboxes (the `PostV2Sandboxes` operationId).
-func (c *ClientWithResponses) PostV2SandboxesWithResponse(ctx context.Context, body PostV2SandboxesJSONRequestBody, reqEditors ...RequestEditorFn) (*PostV2SandboxesResponse, error) {
-	rsp, err := c.PostV2Sandboxes(ctx, body, reqEditors...)
+func (c *ClientWithResponses) PostV2SandboxesWithResponse(ctx context.Context, params *PostV2SandboxesParams, body PostV2SandboxesJSONRequestBody, reqEditors ...RequestEditorFn) (*PostV2SandboxesResponse, error) {
+	rsp, err := c.PostV2Sandboxes(ctx, params, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -22030,6 +22071,20 @@ func ParsePostV2SandboxesResponse(rsp *http.Response) (*PostV2SandboxesResponse,
 			return nil, err
 		}
 		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
 		var dest N429

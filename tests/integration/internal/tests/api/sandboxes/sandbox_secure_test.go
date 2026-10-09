@@ -69,7 +69,7 @@ func TestCreateSandboxV2IsSecured(t *testing.T) {
 
 	sbxTimeout := int32(60)
 
-	resp, err := c.PostV2SandboxesWithResponse(ctx, api.NewSandboxV2{
+	resp, err := c.PostV2SandboxesWithResponse(ctx, nil, api.NewSandboxV2{
 		TemplateID: setup.SandboxTemplateID,
 		Timeout:    &sbxTimeout,
 	}, setup.WithAPIKey())
@@ -113,7 +113,7 @@ func TestCreateSandboxV2WithDisabledPublicTraffic(t *testing.T) {
 	sbxTimeout := int32(60)
 	sbxAllowPublicTraffic := false
 
-	resp, err := c.PostV2SandboxesWithResponse(ctx, api.NewSandboxV2{
+	resp, err := c.PostV2SandboxesWithResponse(ctx, nil, api.NewSandboxV2{
 		TemplateID: setup.SandboxTemplateID,
 		Timeout:    &sbxTimeout,
 		Network: &api.SandboxNetworkConfig{

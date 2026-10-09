@@ -23,6 +23,7 @@ import (
 	"github.com/e2b-dev/infra/packages/api/internal/api"
 	templatecache "github.com/e2b-dev/infra/packages/api/internal/cache/templates"
 	"github.com/e2b-dev/infra/packages/api/internal/fcgate"
+	"github.com/e2b-dev/infra/packages/api/internal/middleware/idempotency"
 	apiorch "github.com/e2b-dev/infra/packages/api/internal/orchestrator"
 	"github.com/e2b-dev/infra/packages/api/internal/sandbox"
 	"github.com/e2b-dev/infra/packages/auth/pkg/auth"
@@ -81,7 +82,7 @@ func (a *APIStore) PostSandboxes(c *gin.Context) {
 }
 
 // PostV2Sandboxes creates a sandbox with secured envd access; the request has no secure field to opt out.
-func (a *APIStore) PostV2Sandboxes(c *gin.Context) {
+func (a *APIStore) PostV2Sandboxes(c *gin.Context, _ api.PostV2SandboxesParams) {
 	ctx := c.Request.Context()
 
 	body, err := ginutils.ParseBody[api.PostV2SandboxesJSONRequestBody](ctx, c)
@@ -93,7 +94,9 @@ func (a *APIStore) PostV2Sandboxes(c *gin.Context) {
 		return
 	}
 
-	a.createSandbox(c, newSandboxFromV2(body), sandbox.SandboxTimeoutDefaultV2)
+	idempotency.Execute(c, body, func() {
+		a.createSandbox(c, newSandboxFromV2(body), sandbox.SandboxTimeoutDefaultV2)
+	})
 }
 
 func newSandboxFromV2(body api.NewSandboxV2) api.NewSandbox {

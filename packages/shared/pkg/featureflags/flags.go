@@ -540,7 +540,9 @@ var (
 	// future retirements.
 	EgressRetirementTimeoutMsFlag = NewIntFlag("egress-retirement-timeout-ms", 60000)
 
-	MaxSandboxesPerNode = NewIntFlag("max-sandboxes-per-node", 200)
+	MaxSandboxesPerNode      = NewIntFlag("max-sandboxes-per-node", 200)
+	APIIdempotencyRoutes     = NewJSONFlag("api-idempotency-routes", ldvalue.Null())
+	APIIdempotencyTTLSeconds = NewIntFlag("api-idempotency-ttl-seconds", 86400)
 	// The LD keys keep the legacy "gcloud-" prefix, but the limits apply to uploads on all storage providers.
 	StorageConcurrentUploadLimit  = NewIntFlag("gcloud-concurrent-upload-limit", 8)
 	StorageMaxUploadTasks         = NewIntFlag("gcloud-max-tasks", 16)

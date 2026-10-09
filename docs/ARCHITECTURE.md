@@ -507,6 +507,103 @@ gets a response, the sandbox is fully usable. Fresh creates are internally a *re
 template's base snapshot (cold boots happen for filesystem-only templates and builds, or when
 an explicit resume requests one — see pause and resume below; template creates never do).
 
+#### Opt-in request idempotency
+
+`POST /v2/sandboxes` supports an optional, team-scoped `Idempotency-Key` to prevent retries from
+repeating sandbox creation while a Redis reservation exists. A generic executor owns reservation
+and response replay across API replicas. Participating handlers parse and authorize the request,
+then call `idempotency.Execute(c, requestContent, operation)` with all mutations inside the callback.
+The executor buffers finite HTTP responses, so streaming and connection upgrades cannot use it.
+
+##### Admission and request identity
+
+The `api-idempotency-routes` JSON flag enables participating handlers by HTTP method and Gin route
+pattern. For sandbox creation:
+
+```json
+{"POST /v2/sandboxes": true}
+```
+
+The flag defaults to null, which disables idempotency. The idempotency middleware bypasses requests
+without a key, an authenticated team, or an enabled route. Authentication, schema validation,
+rate limits, and blocked-team checks apply before the executor, including on retries. A key must
+contain one value of 1 to 255 lowercase ASCII letters or digits (`a-z`, `0-9`). The middleware
+validates keys on enabled routes; OpenAPI validation and parameter binding enforce the create
+endpoint's header contract regardless of the flag.
+
+The request fingerprint hashes the HTTP method, concrete URI including query string, and
+handler-supplied JSON-serializable content with SHA-256. Handlers include behavior-affecting
+headers or caller information in that content. Sandbox creation fingerprints its parsed request
+after schema defaults, so whitespace and map ordering do not change identity; array order and
+parsed field values do. Template aliases and business configuration resolve during execution.
+
+##### Reservation and replay
+
+The executor reserves a Redis hash keyed by team ID and the SHA-256 digest of the idempotency key.
+The namespace spans participating routes within a team. An atomic reservation script selects one
+owner across API replicas and stores the request fingerprint, a random owner token, and the
+response deadline in `expected_response_at`. The owner token also guards completion and cleanup,
+so an expired request cannot modify a replacement reservation.
+
+Reservation and execution share the request context's deadline. The response deadline adds a
+five-second persistence budget and uses Redis's clock for comparison. The executor reads the
+reservation and server time together, then selects the response:
+
+| Reservation state | Result |
+|---|---|
+| New reservation | Run the operation callback. |
+| Different request fingerprint | Return 409 with `error_code: idempotency_request_mismatch`. |
+| Matching fingerprint with a cached response | Replay its status, body, and allowlisted headers. |
+| Matching fingerprint without a response, before its deadline | Return 409 with `error_code: idempotency_in_progress`. |
+| Matching fingerprint without a response, with an elapsed or unreadable deadline | Return 422 with `error_code: idempotency_outcome_unknown`. |
+| Redis failure, invalid retention configuration, or missing request deadline | Return 503. |
+
+Retries against a reservation do not wait for or repeat the operation. The `error_code` field
+distinguishes the two conflict cases without requiring clients to parse messages. An unknown
+outcome means the API cannot establish the result, so retrying with a new key can duplicate work.
+A late response from the owner remains replayable while the reservation exists. Admission and
+retry errors do not replace the owner's cached result.
+
+##### Response storage and delivery
+
+The executor captures the handler's status and body, then attempts to persist them before
+delivery. Redis stores one JSON value containing the status, base64-encoded body, and allowlisted
+headers. Base64 preserves arbitrary response bytes; the separate serialized buffer lets Redis
+finish a write after the HTTP capture buffer has been released. The cache includes handler errors
+as well as successful responses, keeping retries attached to one attempt without inferring which
+errors permit safe re-execution.
+
+The handler edits response headers in place while the executor buffers status and body writes.
+Only `Content-Type`, when present, enters the cache. Replay applies that header over the current
+request's headers, preserving fresh request IDs, rate limits, and cross-origin resource sharing
+(CORS) values. The capture pool reuses allocations up to 64 KiB and erases body contents before
+reuse because responses can contain credentials.
+
+Persistence has a detached five-second wait budget and retains request context values for
+tracing. If it fails, the API logs the failure and delivers the handler's response: a caller should
+receive a known creation result even when Redis cannot store it. Subsequent retries can replay
+only a stored response; otherwise they receive the pending or unknown-outcome error.
+
+##### Cancellation and retention
+
+Before execution starts, cancellation or a reservation error triggers best-effort cleanup. The
+reservation worker waits for its Redis call to return before attempting deletion because socket
+I/O can outlive request cancellation. Cleanup gets its own five-second timeout and deletes only
+an unfinished record with the same owner token. Failed cleanup or an ambiguous Redis write can
+leave the reservation until expiry.
+
+Once execution starts, cancellation, a panic, or failed persistence leaves the reservation in
+place. An operation can have side effects before writing any response, so releasing its key
+would allow duplicate work. The executor does not reconcile an unknown operation outcome.
+
+The `api-idempotency-ttl-seconds` flag sets retention, defaulting to 86,400 seconds when
+unavailable. Configured values must be positive integers. The executor sets the time to live
+(TTL) at reservation; completion, retries, flag changes, and deleting the sandbox do not extend
+or remove it. Operators must choose retention longer than the operation window: expiry permits
+a new owner even if the first operation is still running. Redis eviction or data loss, a different
+key, and feature bypass also permit another execution. Redis capacity and access controls must
+account for cached response volume and the sandbox credentials those responses can contain.
+
 ### Sandbox traffic
 
 ```mermaid

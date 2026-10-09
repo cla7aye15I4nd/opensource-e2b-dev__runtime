@@ -28,6 +28,7 @@ require (
 	github.com/e2b-dev/infra/packages/clickhouse v0.0.0
 	github.com/e2b-dev/infra/packages/db v0.0.0
 	github.com/e2b-dev/infra/packages/shared v0.0.0
+	github.com/felixge/httpsnoop v1.1.0
 	github.com/flowchartsman/retry v1.2.0
 	github.com/getkin/kin-openapi v0.146.0
 	github.com/gin-contrib/cors v1.7.6
@@ -153,7 +154,6 @@ require (
 	github.com/exaring/otelpgx v0.11.1 // indirect
 	github.com/facette/natsort v0.0.0-20181210072756-2cd4dd1e2dcb // indirect
 	github.com/fatih/color v1.18.0 // indirect
-	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.15 // indirect

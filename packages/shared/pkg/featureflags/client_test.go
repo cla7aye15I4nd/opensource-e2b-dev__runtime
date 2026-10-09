@@ -6,6 +6,7 @@ import (
 
 	"github.com/launchdarkly/go-sdk-common/v3/ldcontext"
 	"github.com/launchdarkly/go-sdk-common/v3/ldvalue"
+	ldclient "github.com/launchdarkly/go-server-sdk/v7"
 	"github.com/launchdarkly/go-server-sdk/v7/interfaces"
 	"github.com/launchdarkly/go-server-sdk/v7/testhelpers/ldtestdata"
 	"github.com/stretchr/testify/assert"
@@ -219,4 +220,59 @@ func TestIntFlagOverrideNilClient(t *testing.T) {
 	value, served := (&Client{}).IntFlagOverride(t.Context(), IntFlag{name: "int-flag-override-test", fallback: 7})
 	assert.Equal(t, 7, value)
 	assert.False(t, served)
+}
+
+func TestIntFlagWithError(t *testing.T) {
+	t.Parallel()
+	flag := IntFlag{name: "checked-int-flag", fallback: -1}
+	for _, tc := range []struct {
+		name    string
+		value   *ldvalue.Value
+		want    int
+		wantErr bool
+	}{
+		{"missing flag", nil, -1, false},
+		{"configured value", new(ldvalue.Int(25)), 25, false},
+		{"configured fallback", new(ldvalue.Int(-1)), -1, false},
+		{"zero is a served value", new(ldvalue.Int(0)), 0, false},
+		{"large integer", new(ldvalue.Int(1 << 34)), 1 << 34, false},
+		{"whole number", new(ldvalue.Float64(2.0)), 2, false},
+		{"fraction", new(ldvalue.Float64(1.5)), 0, true},
+		{"wrong type", new(ldvalue.String("25")), 0, true},
+		{"null", new(ldvalue.Null()), 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			source := ldtestdata.DataSource()
+			if tc.value != nil {
+				source.Update(source.Flag(flag.Key()).ValueForAll(*tc.value))
+			}
+			client, err := NewClientWithDatasource(source)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, client.Close(context.WithoutCancel(t.Context()))) })
+			value, err := client.IntFlagWithError(t.Context(), flag)
+			if tc.wantErr {
+				require.ErrorContains(t, err, flag.Key())
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, tc.want, value)
+		})
+	}
+}
+
+func TestIntFlagWithErrorUnavailableClient(t *testing.T) {
+	t.Parallel()
+	flag := IntFlag{name: "checked-int-flag", fallback: 7}
+	value, err := (&Client{}).IntFlagWithError(t.Context(), flag)
+	require.NoError(t, err)
+	require.Equal(t, 7, value)
+
+	ld, err := ldclient.MakeCustomClient("", ldclient.Config{Offline: true}, 0)
+	require.NoError(t, err)
+	client := &Client{ld: ld}
+	t.Cleanup(func() { require.NoError(t, client.Close(context.WithoutCancel(t.Context()))) })
+	value, err = client.IntFlagWithError(t.Context(), flag)
+	require.NoError(t, err)
+	require.Equal(t, 7, value)
 }

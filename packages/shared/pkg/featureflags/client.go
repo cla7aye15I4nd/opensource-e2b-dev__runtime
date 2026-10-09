@@ -3,6 +3,7 @@ package featureflags
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
@@ -252,6 +253,30 @@ func (c *Client) WatchJSONFlag(ctx context.Context, flag JSONFlag, contexts ...l
 
 func (c *Client) IntFlag(ctx context.Context, flag IntFlag, contexts ...ldcontext.Context) int {
 	return getFlag(ctx, c.ld, c.ld.IntVariationCtx, flag, c.allContexts(ctx, contexts))
+}
+
+// IntFlagWithError uses the fallback only when no flag value is available.
+// Invalid values and other evaluation failures are returned as errors.
+func (c *Client) IntFlagWithError(ctx context.Context, flag IntFlag, contexts ...ldcontext.Context) (int, error) {
+	if c.ld == nil {
+		return flag.Fallback(), nil
+	}
+	value, detail, err := c.ld.IntVariationDetailCtx(ctx, flag.Key(), mergeContexts(ctx, c.allContexts(ctx, contexts)), flag.Fallback())
+	switch detail.Reason.GetErrorKind() {
+	case ldreason.EvalErrorFlagNotFound, ldreason.EvalErrorClientNotReady:
+		return flag.Fallback(), nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("evaluate integer flag %q: %w", flag.Key(), err)
+	}
+	if detail.Reason.GetKind() == ldreason.EvalReasonError {
+		return 0, fmt.Errorf("evaluate integer flag %q: %s", flag.Key(), detail.Reason.GetErrorKind())
+	}
+	if !detail.Value.IsInt() {
+		return 0, fmt.Errorf("flag %q must be an integer", flag.Key())
+	}
+
+	return value, nil
 }
 
 // IntFlagOverride returns the flag's value and whether LaunchDarkly served it.
