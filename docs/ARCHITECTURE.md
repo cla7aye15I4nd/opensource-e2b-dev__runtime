@@ -283,7 +283,11 @@ batcher, whose flushing remains part of shutdown.
 The agent inside every VM (started by systemd very early in boot), port 49983, chi + Connect RPC.
 
 - **Process service** (`spec/process/process.proto`): start/list/connect to processes, stream
-  stdout/stderr, stdin, signals, PTYs — this is what SDKs use to "run code".
+  stdout/stderr, stdin, signals, PTYs — this is what SDKs use to "run code". A start is refused
+  with `unavailable` while the workload cgroups are frozen for a pause, and the freeze waits for
+  in-flight starts, so a pause does not capture a child stopped before exec in a frozen cgroup. A
+  start into a cgroup the guest froze itself is refused the same way. Starts carrying the system
+  tag are unaffected: they stay in envd's own cgroup, which no freeze covers.
 - **Filesystem service** (`spec/filesystem/filesystem.proto`): stat/list/make/move/remove/watch.
 - **REST**: `/health`, `/metrics`, `/envs`, `/files` upload/download, `/init` (orchestrator pushes
   env vars, access token, metadata after boot/resume), `/upgrade` (live self-upgrade, below),

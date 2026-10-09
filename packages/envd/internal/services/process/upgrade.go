@@ -502,11 +502,20 @@ func (s *Service) ResumeFromHandover(reArmWatchers func([]*upgrade.HandoverWatch
 	s.workloadFreezer.SetGuestFrozenPaths(st.GetGuestFrozenCgroups())
 
 	// The workload stays frozen past this point, so tell the freezer it owns a live freeze
-	// again: neither the freeze-active state nor the watchdog timer crossed the execve, and
-	// without them a freeze before the post-upgrade /init would adopt our own frozen cgroups
-	// as the guest's, and an /init that never arrives would leave the guest frozen with no
-	// backstop.
-	s.workloadFreezer.ResumeFrozen(context.Background())
+	// again: neither the freeze-active state, nor the watchdog timer, nor the spawn barrier
+	// crossed the execve, and without them a freeze before the post-upgrade /init would adopt
+	// our own frozen cgroups as the guest's, an /init that never arrives would leave the guest
+	// frozen with no backstop, and a process start would be refused only by the pre-spawn
+	// probe, which a failed read or a race with the clone can get past.
+	//
+	// Logged rather than returned: only the barrier can fail here, after the watchdog is
+	// armed, and only by failing to drain spawns that a just-execve'd image cannot have.
+	// Failing the handover over it would trip the deferred thaw and release a re-adopted
+	// workload before /init restores auth, which is a worse outcome than a window guarded
+	// only by the probe before a thaw that is already due.
+	if err := s.workloadFreezer.ResumeFrozen(context.Background()); err != nil {
+		s.logger.Error().Err(err).Msg("inherited a frozen workload without the spawn barrier: only the pre-spawn probe guards process starts until /init")
+	}
 
 	keepFrozen = true
 

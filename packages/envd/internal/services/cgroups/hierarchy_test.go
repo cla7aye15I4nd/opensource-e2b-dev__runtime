@@ -752,7 +752,7 @@ func TestResumeFrozen_RestoresWhatTheExecveDropped(t *testing.T) {
 	fired := make(chan ThawResult, 1)
 	in.SetThawWatchdog(40*time.Millisecond, func(res ThawResult, _ error) { fired <- res })
 	in.SetGuestFrozenPaths(carried)
-	in.ResumeFrozen(t.Context())
+	require.NoError(t, in.ResumeFrozen(t.Context()))
 
 	// A freeze before the post-upgrade /init must not adopt our predecessor's freezes.
 	res, err := in.Freeze(t.Context(), FreezeOptions{Mode: ModeHierarchy})

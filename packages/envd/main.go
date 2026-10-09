@@ -342,7 +342,7 @@ func run() error {
 	defer portScanner.Destroy()
 
 	portLogger := l.With().Str("logger", "port-forwarder").Logger()
-	portForwarder := publicport.NewForwarder(&portLogger, portScanner, cgroupManager)
+	portForwarder := publicport.NewForwarder(&portLogger, portScanner, workloadFreezer)
 	if resumeHandover {
 		// Re-adopt the socats carried across the upgrade before the forwarder's
 		// first scan, so it recognizes already-forwarded ports instead of spawning

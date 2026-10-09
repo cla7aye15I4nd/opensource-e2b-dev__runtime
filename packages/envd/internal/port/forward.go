@@ -56,8 +56,12 @@ func (p *PortToForward) socatPID() int {
 }
 
 type Forwarder struct {
-	logger        *zerolog.Logger
-	cgroupManager cgroups.Manager
+	logger *zerolog.Logger
+	// freezer both places the socat (through its manager) and admits the spawn. The socat
+	// cgroup is on the freeze allowlist, so it is never ours to freeze -- but the guest can
+	// freeze it, and a socat cloned into a frozen cgroup wedges envd exactly as a user
+	// process would.
+	freezer *cgroups.WorkloadFreezer
 	// mu guards the ports map. The scan loop is single-goroutine, but the
 	// live-upgrade export (ExportForwards) reads the map from the upgrade
 	// goroutine concurrently, so map access is serialized.
@@ -71,7 +75,7 @@ type Forwarder struct {
 func NewForwarder(
 	logger *zerolog.Logger,
 	scanner *Scanner,
-	cgroupManager cgroups.Manager,
+	freezer *cgroups.WorkloadFreezer,
 ) *Forwarder {
 	scannerSub := scanner.AddSubscriber(
 		"port-forwarder",
@@ -87,7 +91,7 @@ func NewForwarder(
 		sourceIP:          defaultGatewayIP,
 		ports:             make(map[string]*PortToForward),
 		scannerSubscriber: scannerSub,
-		cgroupManager:     cgroupManager,
+		freezer:           freezer,
 	}
 }
 
@@ -149,7 +153,12 @@ func (f *Forwarder) StartForwarding(ctx context.Context) {
 						family: familyToIPVersion(p.Family),
 					}
 					f.ports[key] = ptf
-					f.startPortForwarding(ctx, ptf)
+					if retry := f.startPortForwarding(ctx, ptf); retry {
+						// Not tracked, so the next scan sees an unforwarded port and tries
+						// again. Left in the map it would read as forwarded from then on,
+						// and the port would stay dark until its listener reopened.
+						delete(f.ports, key)
+					}
 				}
 			}
 
@@ -166,7 +175,11 @@ func (f *Forwarder) StartForwarding(ctx context.Context) {
 	}
 }
 
-func (f *Forwarder) startPortForwarding(ctx context.Context, p *PortToForward) {
+// startPortForwarding starts the socat for p. retry reports a start that was refused
+// rather than failed -- the socat cgroup is frozen -- which the caller should attempt
+// again on the next scan. A socat that fails to start is not retried: nothing about the
+// next scan would make it succeed, and every attempt would log an error.
+func (f *Forwarder) startPortForwarding(ctx context.Context, p *PortToForward) (retry bool) {
 	// https://unix.stackexchange.com/questions/311492/redirect-application-listening-on-localhost-to-listening-on-external-interface
 	// socat -d -d TCP4-LISTEN:4000,bind=169.254.0.21,fork TCP4:localhost:4000
 	// reuseaddr is used to fix the "Address already in use" error when restarting socat quickly.
@@ -176,7 +189,7 @@ func (f *Forwarder) startPortForwarding(ctx context.Context, p *PortToForward) {
 		fmt.Sprintf("TCP%d:localhost:%v", p.family, p.port),
 	)
 
-	cgroupFD, ok := f.cgroupManager.GetFileDescriptor(cgroups.ProcessTypeSocat)
+	cgroupFD, ok := f.freezer.Manager().GetFileDescriptor(cgroups.ProcessTypeSocat)
 
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
@@ -191,14 +204,31 @@ func (f *Forwarder) startPortForwarding(ctx context.Context, p *PortToForward) {
 		Uint32("port", p.port).
 		Msg("About to start port forwarding")
 
-	if err := cmd.Start(); err != nil {
+	// A socat cloned into a frozen cgroup never reaches execve, and Go's fork/exec waits
+	// for that execve in a syscall the runtime cannot preempt -- so the next
+	// garbage-collection stop-the-world stops all of envd. Skip the forward instead and let the next scan retry it; a port that is not
+	// forwarded for a while is a degradation rather than a dead sandbox. Debug rather than
+	// Warn because it repeats every scan for as long as the guest keeps the cgroup frozen.
+	releaseSpawn, err := f.freezer.BeginSpawn(ctx, cgroups.ProcessTypeSocat)
+	if err != nil {
+		f.logger.Debug().
+			Uint32("port", p.port).
+			Err(err).
+			Msg("Deferring port forwarding: the socat cgroup is frozen")
+
+		return true
+	}
+	err = cmd.Start()
+	releaseSpawn()
+
+	if err != nil {
 		f.logger.
 			Error().
 			Str("socatCmd", cmd.String()).
 			Err(err).
 			Msg("Failed to start port forwarding - failed to start socat")
 
-		return
+		return false
 	}
 
 	go func() {
@@ -212,6 +242,8 @@ func (f *Forwarder) startPortForwarding(ctx context.Context, p *PortToForward) {
 	}()
 
 	p.socat = cmd
+
+	return false
 }
 
 func (f *Forwarder) stopPortForwarding(p *PortToForward) {

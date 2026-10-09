@@ -155,6 +155,15 @@ type WorkloadFreezer struct {
 	mgr  Manager
 	lock *semaphore.Weighted
 
+	// spawns keeps cgroup-placed process spawns out of the frozen window. It is raised
+	// before a sweep writes cgroup.freeze and lowered once the thaw has cleared the static
+	// cgroups spawns land in, so it is held for the whole window rather than for the sweep --
+	// see spawnBarrier for what a spawn admitted into a frozen cgroup does to this process.
+	// It is deliberately NOT f.lock: that lock serializes freeze against thaw and is released
+	// when a Freeze finishes, or when a FreezeHold's caller lets go, while the workload
+	// stays frozen until the thaw.
+	spawns *spawnBarrier
+
 	// thawMu guards thawedCh, the channel closed on the next Unfreeze. It lets
 	// callers block until the workload is next thawed (see Thawed).
 	thawMu   sync.Mutex
@@ -318,7 +327,12 @@ func (f *WorkloadFreezer) thawForWatchdog(ctx context.Context, gen uint64) (Thaw
 
 // NewWorkloadFreezer wraps a cgroup manager with the shared freeze lock.
 func NewWorkloadFreezer(mgr Manager) *WorkloadFreezer {
-	return &WorkloadFreezer{mgr: mgr, lock: semaphore.NewWeighted(1), procSelfCgroup: ProcSelfCgroup}
+	return &WorkloadFreezer{
+		mgr:            mgr,
+		lock:           semaphore.NewWeighted(1),
+		spawns:         newSpawnBarrier(),
+		procSelfCgroup: ProcSelfCgroup,
+	}
 }
 
 // Thawed returns a channel that is closed the next time the workload is
@@ -497,6 +511,29 @@ func (f *WorkloadFreezer) FreezeHold(ctx context.Context, opts FreezeOptions) (r
 	var once sync.Once
 	release = func() { once.Do(func() { f.lock.Release(1) }) }
 
+	// Before ANY cgroup is written: block new spawns and wait for the in-flight ones to
+	// finish, so no clone3(CLONE_INTO_CGROUP) can be in flight against a cgroup this sweep
+	// is about to freeze. The barrier stays up past this call -- the thaw lowers it -- because
+	// a spawn admitted after the sweep lands in a cgroup that is already frozen.
+	//
+	// A drain that times out means a spawn is wedged, or not being scheduled at all; either
+	// way it may still be headed for a cgroup this sweep would freeze, and freezing on top of
+	// a wedge is what turns it into an unresumable snapshot. So the freeze is refused instead: the
+	// caller sees an error and pauses an unfrozen workload, which is what it already does
+	// whenever a freeze fails.
+	if err := f.spawns.raise(ctx); err != nil {
+		release()
+
+		// Counted as Failed, on the reading that every workload cgroup is one this sweep
+		// could not freeze. The count is not strictly a write that was refused -- no write
+		// was attempted -- but it is what makes AllFrozen false, and every consumer of that
+		// does the same thing here as for a refused write: report that the pause may capture
+		// a running workload. Left as a bare count rather than a new outcome because a result
+		// that reads clean while nothing was frozen is the one shape nobody would notice. Mode
+		// echoes the sweep that was asked for; none ran.
+		return func() {}, FreezeResult{Mode: opts.mode(), Failed: len(WorkloadProcessTypes)}, err
+	}
+
 	var errs []error
 	sweepStart := time.Now()
 
@@ -573,7 +610,20 @@ func (f *WorkloadFreezer) FreezeHold(ctx context.Context, opts FreezeOptions) (r
 	// earlier one opened -- those cgroups are still frozen, and the flag is what stops the next
 	// sweep from rescanning and adopting them as the guest's.
 	f.freezeActive = f.freezeActive || res.Requested > 0
+	active := f.freezeActive
 	f.sweepMu.Unlock()
+
+	// A sweep that had no freeze write accepted, inside no window an earlier freeze opened,
+	// opened no window, so holding spawns out of it would refuse process starts until the
+	// next thaw for no reason -- and on a guest where every write fails there may never be
+	// one. A sweep whose writes were accepted keeps the barrier up even if the freeze never
+	// settled: the cgroup may still finish freezing. Read from freezeActive rather than from
+	// Requested so a sweep inside a window an EARLIER freeze of this process opened keeps the
+	// barrier up. A window left by a previous envd process that is not in freezeActive is
+	// not seen here; the pre-spawn probe still refuses a spawn into a cgroup it froze.
+	if !active {
+		f.spawns.lower()
+	}
 
 	// The backstop exists to undo what this sweep did, and a sweep that wrote nothing has left
 	// nothing for it to undo. The case that looks like a gap -- a retried freeze against a tree
@@ -919,8 +969,8 @@ func (f *WorkloadFreezer) SetGuestFrozenPaths(rel []string) {
 
 // ResumeFrozen tells the freezer it has inherited a workload that is already frozen BY US --
 // the state a live-upgrade handover leaves behind, where the outgoing image froze the guest and
-// the incoming one is expected to thaw it at /init. Two pieces of state do not survive an
-// execve, and both matter while that thaw is still pending:
+// the incoming one is expected to thaw it at /init. Three pieces of state do not survive an
+// execve, and all of them matter while that thaw is still pending:
 //
 //   - the freeze counts as ACTIVE again, so a freeze taken before the thaw does not re-run the
 //     guest scan and adopt our own frozen cgroups as the guest's. That mistake is permanent:
@@ -928,15 +978,29 @@ func (f *WorkloadFreezer) SetGuestFrozenPaths(rel []string) {
 //   - the WATCHDOG is armed, because the timer belonged to the previous process image. Without
 //     it an /init that never arrives leaves a frozen guest with no backstop -- precisely the
 //     case the watchdog exists for, and the one a live upgrade would otherwise open.
+//   - the SPAWN BARRIER is raised, because the semaphore belonged to the previous image too.
+//     The workload is frozen and stays frozen until the post-upgrade /init. The pre-spawn
+//     probe would refuse a start into it too, but only as far as its read is right and
+//     lands before the clone; the barrier makes the refusal exact, as it is after a freeze
+//     of this process. It cannot block: a freshly execve'd image has no spawns in flight
+//     to drain.
 //
 // The sweep MODE is deliberately not restored: this process did not perform the freeze and
 // cannot know what its predecessor covered, so the resume audit declines rather than guessing.
-func (f *WorkloadFreezer) ResumeFrozen(ctx context.Context) {
+func (f *WorkloadFreezer) ResumeFrozen(ctx context.Context) error {
 	f.sweepMu.Lock()
 	f.freezeActive = true
 	f.sweepMu.Unlock()
 
+	// The watchdog first, so a barrier that fails to rise cannot leave the inherited freeze
+	// without its backstop as well.
 	f.armWatchdog(ctx)
+
+	if err := f.spawns.raise(ctx); err != nil {
+		return fmt.Errorf("raise the spawn barrier for an inherited freeze: %w", err)
+	}
+
+	return nil
 }
 
 // UnthawedSweepMode reports which sweep produced the freeze state that is STILL IN PLACE, or
@@ -1136,11 +1200,34 @@ func (f *WorkloadFreezer) unfreezeLocked(maxCgroups int) (ThawResult, error) {
 
 	// Always thaw the static list: it is cheap, idempotent, and it is the only thing a
 	// manager without path support can do.
+	staticThawed := true
 	for _, pt := range WorkloadProcessTypes {
 		if err := f.mgr.Unfreeze(pt); err != nil {
 			errs = append(errs, fmt.Errorf("unfreeze %s cgroup: %w", pt, err))
 			res.Failed++
+			// A static cgroup that no longer exists holds no frozen task and takes no
+			// spawn, so it does not keep the barrier up. Counting it would refuse every
+			// start into the cgroup that did thaw for as long as the guest leaves the
+			// other one removed, since every later thaw fails the same way.
+			if !vanished(err) {
+				staticThawed = false
+			}
 		}
+	}
+
+	// The barrier guards spawns into the static cgroups only, so it follows THEIR thaw rather
+	// than the whole tree's. Tying it to a clean whole-tree thaw instead would let one guest
+	// cgroup that refuses its write -- or a walk truncated at the bound, which a watchdog
+	// retry re-walks identically -- refuse every process start for the life of the sandbox,
+	// while the cgroups those starts land in are running normally.
+	//
+	// Lowering it here is safe against the cases that remain. A later freeze of ours raises
+	// it again under f.lock before writing anything. A cgroup still frozen for any other
+	// reason -- the guest's own, or an ancestor this thaw could not clear -- is refused by the
+	// pre-spawn probe, which reads the target's settled state and the request of every
+	// ancestor.
+	if staticThawed {
+		f.spawns.lower()
 	}
 
 	// Discover ONLY when a freeze of ours is in effect. Walking the tree unconditionally makes
