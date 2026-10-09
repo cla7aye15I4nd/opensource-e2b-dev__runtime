@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/semaphore"
@@ -40,7 +42,7 @@ const (
 //     down. There is no surviving frozen guest for a backstop to rescue, so firing inside
 //     that window would only ever hit a sandbox that was about to be destroyed anyway.
 //   - What the watchdog actually covers is a sandbox that is ALIVE with its workload still
-//     frozen: /init arrived but the deferred thaw failed, or the live-upgrade handover left
+//     frozen: /init arrived but its thaw failed, or the live-upgrade handover left
 //     the workload frozen on purpose and the post-upgrade /init never came. Nothing else
 //     notices those, because a resume does not restart envd -- it restores this same
 //     process mid-execution, so there is no startup path to hook.
@@ -143,8 +145,8 @@ const freezePollInterval = 2 * time.Millisecond
 const HandoverMaxWait = 2 * time.Second
 
 // WorkloadFreezer serializes freeze/unfreeze of the workload cgroups across
-// every caller — the pre-pause /freeze, the pause-rollback /unfreeze, the /init
-// deferred resume-thaw, and the live-upgrade handover — through a single lock,
+// every caller — the pre-pause /freeze, the pause-rollback /unfreeze, the resume
+// thaw /init runs, and the live-upgrade handover — through a single lock,
 // so their per-cgroup sweeps can never interleave and strand the workload
 // frozen. Freeze and Unfreeze are best-effort: each attempts every cgroup even
 // if one fails and returns the joined error.
@@ -212,6 +214,23 @@ type WorkloadFreezer struct {
 	// clean, disarm the timer belonging to it -- undoing a freeze and removing its backstop
 	// in one go. The generation is what makes a superseded fire a no-op.
 	watchdogGen uint64
+
+	// freezeGen advances on every freeze attempt that takes the lock, including one the spawn
+	// drain then refuses before freezing anything, and on nothing else. An /init handler
+	// reads it when it enters and thaws only while it is unchanged (ThawIfGeneration), so a
+	// handler that a freeze overtook -- delivered before a pause and completing after its
+	// freeze -- does not undo that freeze and let the snapshot catch the workload running.
+	// The check sits under lock for the reason watchdogGen's does. Seeded at random below
+	// 2^52, so the values the refusal logs stay below 2^53, and decode exactly in a reader
+	// that parses JSON numbers as doubles, for 2^52 freezes.
+	freezeGen uint64
+
+	// unobservedInits counts /init handlers whose thaw ran and finished with their request
+	// context already done: no client was left to read the response that said so. Added
+	// after the thaw, inside its critical section (ThawIfGeneration's afterThaw), and zeroed
+	// by every freeze inside its own, so a count from the life a freeze ends is not carried
+	// into the snapshot and reported by the first /init of the life resumed from it.
+	unobservedInits atomic.Int64
 }
 
 // SetThawWatchdog arms a backstop: if a freeze is not followed by a thaw within window,
@@ -332,8 +351,56 @@ func NewWorkloadFreezer(mgr Manager) *WorkloadFreezer {
 		lock:           semaphore.NewWeighted(1),
 		spawns:         newSpawnBarrier(),
 		procSelfCgroup: ProcSelfCgroup,
+		freezeGen:      rand.Uint64N(maxFreezeGenSeed),
 	}
 }
+
+// maxFreezeGenSeed bounds the random seed below 2^52, leaving 2^52 freezes before the
+// generation reaches 2^53, above which a double no longer holds every integer exactly.
+const maxFreezeGenSeed = 1 << 52
+
+// FreezeGeneration returns the current freeze generation, read with the freeze lock held so
+// it is ordered against every freeze: a freeze in progress finishes first, and so does a
+// live-upgrade hold, which keeps the lock until its execve replaces the process (a waiting
+// /init then never returns) or the handover fails and releases it. The wait is not bounded
+// by ctx, so a caller whose context is already done still reads it.
+func (f *WorkloadFreezer) FreezeGeneration(ctx context.Context) uint64 {
+	_ = f.lock.Acquire(context.WithoutCancel(ctx), 1) // cannot fail: the context is never done
+	defer f.lock.Release(1)
+
+	return f.freezeGen
+}
+
+// ThawIfGeneration runs the thaw UnfreezeReporting runs, but only if want is still the
+// current freeze generation, checked with the freeze lock held so no freeze can come between
+// the check and the thaw. On a match, afterThaw (if non-nil) runs after the thaw, still
+// inside the critical section, so whatever it records cannot be separated from the thaw by
+// a freeze. current is the generation at the check, which a caller logs when matched is
+// false and nothing ran. Like UnfreezeReporting, the wait for the lock is not bounded by ctx.
+func (f *WorkloadFreezer) ThawIfGeneration(ctx context.Context, want uint64, afterThaw func()) (current uint64, matched bool, res ThawResult, err error) {
+	_ = f.lock.Acquire(context.WithoutCancel(ctx), 1) // cannot fail: the context is never done
+	defer f.lock.Release(1)
+
+	current = f.freezeGen
+	if want != current {
+		return current, false, ThawResult{}, nil
+	}
+
+	res, err = f.unfreezeLocked(DefaultThawMaxCgroups)
+
+	if afterThaw != nil {
+		afterThaw()
+	}
+
+	return current, true, res, err
+}
+
+// AddUnobservedInit counts one /init handler that thawed with no client left (see
+// unobservedInits). Call it from ThawIfGeneration's afterThaw, under the freeze lock.
+func (f *WorkloadFreezer) AddUnobservedInit() { f.unobservedInits.Add(1) }
+
+// TakeUnobservedInits returns the unobserved-/init count and resets it to zero.
+func (f *WorkloadFreezer) TakeUnobservedInits() int64 { return f.unobservedInits.Swap(0) }
 
 // Thawed returns a channel that is closed the next time the workload is
 // unfrozen (a fresh one is installed after each Unfreeze). A re-adopted
@@ -498,15 +565,22 @@ func (f *WorkloadFreezer) Freeze(ctx context.Context, opts FreezeOptions) (Freez
 // FreezeHold freezes the workload cgroups and KEEPS the lock held, returning a
 // release func. Unlike Freeze (which releases as soon as the sweep is done), this
 // lets a caller keep the freeze uninterruptible across a critical section — the
-// live-upgrade handover — so a concurrent Unfreeze (e.g. /init's deferred
-// resume-thaw or /unfreeze) blocks on the lock until release is called and cannot
-// thaw the workload mid-handover. The frozen cgroup state persists after release;
-// release only drops the lock and is idempotent. On a lock-acquire failure it
+// live-upgrade handover — so a concurrent thaw (/init's, /unfreeze's, the watchdog's or
+// the post-upgrade fallback's) blocks on the lock until release is called and cannot
+// thaw the workload mid-handover, and a /init entering meanwhile waits there for its
+// freeze-generation read. The frozen cgroup state persists after release; release only
+// drops the lock and is idempotent. On a lock-acquire failure it
 // returns a no-op release and the error.
 func (f *WorkloadFreezer) FreezeHold(ctx context.Context, opts FreezeOptions) (release func(), res FreezeResult, err error) {
 	if err := f.lock.Acquire(ctx, 1); err != nil {
 		return func() {}, FreezeResult{}, err
 	}
+
+	// First, so a sweep that fails or panics part-way has still voided the thaw of every
+	// /init handler that entered before it.
+	f.freezeGen++
+	// A count from before this freeze belongs to the life it ends.
+	f.unobservedInits.Store(0)
 
 	var once sync.Once
 	release = func() { once.Do(func() { f.lock.Release(1) }) }
@@ -1011,7 +1085,7 @@ func (f *WorkloadFreezer) ResumeFrozen(ctx context.Context) error {
 //
 // That is not hypothetical: /init is retried, and the in-place checkpoint path thaws through
 // POST /unfreeze itself and then re-inits, so a post-thaw look at the tree is an ordinary
-// occurrence. The resume audit is unaffected because it runs before /init's deferred thaw.
+// occurrence. The resume audit is unaffected because it runs inside /init before its thaw.
 func (f *WorkloadFreezer) UnthawedSweepMode() FreezeMode {
 	f.sweepMu.Lock()
 	defer f.sweepMu.Unlock()

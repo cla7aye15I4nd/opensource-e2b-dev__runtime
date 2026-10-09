@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/semaphore"
@@ -54,11 +55,15 @@ type API struct {
 
 	lastSetTime *utils.AtomicMax
 	initLock    *semaphore.Weighted
+	// setSystemTime steps the guest clock; tests replace it so they never step the host's.
+	setSystemTime func(time.Time) error
+	// now reads the time /init's clock correction is measured with; tests replace it.
+	now func() time.Time
 
 	caCertInstaller *host.CACertInstaller
 	// workloadFreezer freezes/thaws the user+pty cgroups. Shared with the process
 	// service (the live-upgrade handover) so every freeze/unfreeze caller — this
-	// API's /freeze, /unfreeze and /init deferred thaw, plus the upgrade — is
+	// API's /freeze, /unfreeze and /init's thaw, plus the upgrade — is
 	// serialized through one lock.
 	workloadFreezer *cgroups.WorkloadFreezer
 	logFlusher      LogFlusher
@@ -152,6 +157,8 @@ func New(l *zerolog.Logger, defaults *execcontext.Defaults, mmdsChan chan *host.
 		isNotFC:         isNotFC,
 		mmdsClient:      &DefaultMMDSClient{},
 		lastSetTime:     utils.NewAtomicMax(),
+		setSystemTime:   setSystemTime,
+		now:             time.Now,
 		accessToken:     &SecureToken{},
 		caCertInstaller: host.NewCACertInstaller(l),
 		workloadFreezer: workloadFreezer,

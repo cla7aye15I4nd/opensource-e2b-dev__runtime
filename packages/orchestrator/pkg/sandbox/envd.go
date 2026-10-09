@@ -180,9 +180,9 @@ func (s *Sandbox) callEnvdFreeze(ctx context.Context, timeout time.Duration, hie
 	return result, true, nil
 }
 
-// callEnvdUnfreeze calls envd's native POST /unfreeze endpoint. Reserved for
-// the pause-failure rollback path; the resume thaw runs via /init's deferred
-// unfreeze and does not use this.
+// callEnvdUnfreeze calls envd's native POST /unfreeze endpoint. Used by the
+// pause-failure rollback and after an in-place checkpoint; the resume thaw runs
+// inside /init and does not use this.
 func (s *Sandbox) callEnvdUnfreeze(ctx context.Context, timeout time.Duration) error {
 	return s.callEnvdPostOp(ctx, timeout, envdOpUnfreeze)
 }

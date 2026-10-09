@@ -71,8 +71,8 @@ const SpawnDrainWait = 250 * time.Millisecond
 // carries CLONE_VM|CLONE_VFORK, so the spawning thread blocks in the kernel until the child
 // execs. It never does. The wait is a raw syscall that keeps the thread's P with signals
 // blocked, so the runtime cannot preempt it, and the next garbage-collection
-// stop-the-world waits for that P forever: every goroutine in envd stops, the deferred
-// thaw in /init and the thaw watchdog included, and nothing is left that could unfreeze
+// stop-the-world waits for that P forever: every goroutine in envd stops, /init's thaw
+// and the thaw watchdog included, and nothing is left that could unfreeze
 // the child. If the snapshot captures that state, a resume succeeds only when /init
 // happens to thaw the cgroup before the next stop-the-world begins.
 //

@@ -313,8 +313,8 @@ The agent inside every VM (started by systemd very early in boot), port 49983, c
 - **REST**: `/health`, `/metrics`, `/envs`, `/files` upload/download, `/init` (orchestrator pushes
   env vars, access token, metadata and the online CPU count after boot/resume), `/upgrade` (live self-upgrade, below),
   freeze/thaw hooks used during pause.
-- **Public vs. control-plane routes**: the control routes (`/init`, `/upgrade`, and the freeze/thaw
-  hooks) are marked `x-internal: true` in `spec/envd.yaml`, and `/upgrade` — which the spec does not
+- **Public vs. control-plane routes**: the control routes (`/init`, `/collapse`, `/upgrade`, and the
+  freeze/thaw hooks) are marked `x-internal: true` in `spec/envd.yaml`, and `/upgrade` — which the spec does not
   describe — is listed alongside them in the orchestrator's `pkg/sandbox/envd`. The orchestrator
   reaches them over the host network at the sandbox slot IP; the sandbox proxy refuses them with a
   404, for every method, so they are not reachable through a sandbox URL. Adding a control route
@@ -332,8 +332,10 @@ The agent inside every VM (started by systemd very early in boot), port 49983, c
   (procs/watchers re-adopted, plus any failures) rides back on that `/init`'s `X-Envd-Handover`
   header for fleet visibility.
 - Scans guest ports and forwards them so any port a user process opens becomes reachable through
-  sandbox URLs. **`pkg/version.go` must be bumped on every behavioral change** — the API and the
-  orchestrator gate features on the envd version recorded in each template build.
+  sandbox URLs. **`pkg/version.go` carries the released version**, maintained by release-please from
+  the Conventional Commits merged since the last envd release; do not edit it by hand. The API and
+  the orchestrator gate features on the envd version recorded in each template build, so a
+  behavioral change ships under a `feat`/`fix` commit type that cuts a version it can be gated on.
 
 ### Client proxy (`packages/client-proxy`)
 
@@ -787,7 +789,7 @@ packages/
   api/                  Control-plane REST API
   orchestrator/         Sandbox runtime + template builder (one binary, per-node)
   client-proxy/         Edge router for sandbox traffic
-  envd/                 In-VM agent (bump pkg/version.go on behavior change!)
+  envd/                 In-VM agent (pkg/version.go is release-please's; see Envd)
   dashboard-api/        Web-dashboard backend
   shared/               Protos, telemetry, storage clients, proxy engine, feature flags
   auth/                 AuthN library (API keys, JWT/OIDC) used by api + dashboard-api

@@ -1528,10 +1528,13 @@ func ResolveFirecrackerVersion(ctx context.Context, ff *Client, buildVersion str
 // injected so this shared package does not depend on the orchestrator.
 //
 // The "should we upgrade?" test compares baked version *strings* (built-with vs
-// the target's version). This is sufficient because CLAUDE.md mandates bumping
-// packages/envd/pkg/version.go on every behavioral change; if that ever stops
-// holding, a same-version binary swap would be skipped and this must switch to
-// comparing by git SHA.
+// the target's version). That holds as long as every upgrade target bakes a
+// distinct version. A published build does: it bakes its release identity
+// (LINK_VERSION), the SemVer of an envd release or the per-commit auto-deploy
+// identity of any other main commit. A build without one bakes
+// packages/envd/pkg/version.go, which release-please moves only once per envd
+// release (nobody bumps it by hand), so two such builds cut between releases
+// compare equal and a swap between them would be skipped.
 // It returns the target binary's path and baked version ("" path = no upgrade),
 // plus a reason for the no-upgrade case — off | not_staged | invalid_target |
 // getversion_failed | same_version | downgrade | source_stalled, and "" when an

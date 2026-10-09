@@ -326,7 +326,7 @@ func (s *Service) ResumeFromHandover(reArmWatchers func([]*upgrade.HandoverWatch
 	// Thaw the workload on every FAILURE path — a bad blob, partial re-adopt, or
 	// panic must never leave the sandbox frozen (a degraded-but-running workload
 	// beats a hung one). On SUCCESS the workload is deliberately left frozen: the
-	// orchestrator's post-upgrade /init thaws it (deferred unfreeze in PostInit)
+	// orchestrator's post-upgrade /init thaws it (the thaw in PostInit)
 	// only after it has re-established the access token. This closes the window
 	// in which a re-adopted — and possibly hostile — guest process could run
 	// before /init restores auth and reach the unauthenticated /upgrade endpoint

@@ -60,6 +60,24 @@ func (e PostFreezeParamsMode) Valid() bool {
 	}
 }
 
+// Defines values for PostInitJSONBodyThaw.
+const (
+	Inline PostInitJSONBodyThaw = "inline"
+	Skip   PostInitJSONBodyThaw = "skip"
+)
+
+// Valid indicates whether the value is a known member of the PostInitJSONBodyThaw enum.
+func (e PostInitJSONBodyThaw) Valid() bool {
+	switch e {
+	case Inline:
+		return true
+	case Skip:
+		return true
+	default:
+		return false
+	}
+}
+
 // CollapseResult Per-call statistics from a heap collapse
 type CollapseResult struct {
 	// AlreadyHuge Chunks MADV_COLLAPSE accepted but were already hugepages (no work)
@@ -356,10 +374,16 @@ type PostInitJSONBody struct {
 	// LifecycleID Lifecycle ID of the sandbox
 	LifecycleID string `json:"lifecycleID,omitempty"`
 
-	// Timestamp The current timestamp in RFC3339 format
+	// Thaw Whether this call thaws the workload cgroups a pre-pause freeze left frozen. Absent or "inline": it thaws them before it answers, as every envd before this field did, unless a freeze came after the call entered, which the call then leaves in place. "skip": it thaws nothing and answers X-Envd-Thaw: skip, leaving the workload frozen; only for a resume whose VM is discarded after the call, such as one that records which pages the resume touches. A value this envd does not know reads as inline, the side on which a guest is never left frozen.
+	Thaw PostInitJSONBodyThaw `json:"thaw,omitempty"`
+
+	// Timestamp The current timestamp in RFC3339 format. envd adds its own time from reading the request body to its clock gates, reported on X-Envd-Init-Clock-Correction, and applies its clock rules to the result.
 	Timestamp    time.Time     `json:"timestamp,omitempty"`
 	VolumeMounts []VolumeMount `json:"volumeMounts,omitempty"`
 }
+
+// PostInitJSONBodyThaw defines parameters for PostInit.
+type PostInitJSONBodyThaw string
 
 // PostFilesMultipartRequestBody defines body for PostFiles for multipart/form-data ContentType.
 type PostFilesMultipartRequestBody PostFilesMultipartBody
