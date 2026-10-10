@@ -127,6 +127,8 @@ func admissionTestServer(t *testing.T, graceMs *int) *Server {
 	}
 }
 
+const admissionTestTeamID = "team-1"
+
 func admissionTestSandbox(t *testing.T, sandboxID string, slotIdx int, durable *utils.SetOnce[*header.Header]) *sandbox.Sandbox {
 	t.Helper()
 
@@ -140,7 +142,7 @@ func admissionTestSandbox(t *testing.T, sandboxID string, slotIdx int, durable *
 				Envd:              sandbox.EnvdMetadata{Version: "9.9.9"},
 				FirecrackerConfig: fc.Config{FirecrackerVersion: "v1.14.1", KernelVersion: "vmlinux-6.1"},
 			}),
-			Runtime: sandboxtypes.RuntimeMetadata{SandboxID: sandboxID},
+			Runtime: sandboxtypes.RuntimeMetadata{SandboxID: sandboxID, TeamID: admissionTestTeamID},
 		},
 		Resources: &sandbox.Resources{Slot: slot},
 		Template:  admissionTestTemplate{memfile: &admissionRODevice{durable: durable, waiting: make(chan struct{})}},
@@ -538,14 +540,14 @@ func TestPauseAdmissionMetrics_RefusedPause(t *testing.T) {
 		points := admissionCounterPoints(t, reader)
 		require.Len(t, points, 1)
 		assert.EqualValues(t, 1, points[0].Value)
-		assert.Equal(t, map[string]string{"outcome": "refused", "rpc": "pause"}, attrsAsMap(t, points[0].Attributes),
-			"counter attributes must be exactly outcome+rpc")
+		assert.Equal(t, map[string]string{"outcome": "refused", "rpc": "pause", "team.id": admissionTestTeamID}, attrsAsMap(t, points[0].Attributes),
+			"counter attributes must be exactly outcome+rpc+team.id")
 
 		waits := admissionWaitPoints(t, reader)
 		require.Len(t, waits, 1)
 		require.EqualValues(t, 1, waits[0].Count)
-		assert.Equal(t, map[string]string{"outcome": "refused"}, attrsAsMap(t, waits[0].Attributes),
-			"wait histogram attribute must be exactly outcome")
+		assert.Equal(t, map[string]string{"outcome": "refused", "team.id": admissionTestTeamID}, attrsAsMap(t, waits[0].Attributes),
+			"wait histogram attributes must be exactly outcome+team.id")
 		assert.Equal(t, int64(30), waits[0].Sum)
 	})
 }
@@ -562,12 +564,12 @@ func TestPauseAdmissionMetrics_RefusedCheckpoint(t *testing.T) {
 
 	points := admissionCounterPoints(t, reader)
 	require.Len(t, points, 1)
-	assert.Equal(t, map[string]string{"outcome": "refused", "rpc": "checkpoint"}, attrsAsMap(t, points[0].Attributes))
+	assert.Equal(t, map[string]string{"outcome": "refused", "rpc": "checkpoint", "team.id": admissionTestTeamID}, attrsAsMap(t, points[0].Attributes))
 
 	// An instant probe (grace 0) still entered the waiting outcome: recorded.
 	waits := admissionWaitPoints(t, reader)
 	require.Len(t, waits, 1)
-	assert.Equal(t, map[string]string{"outcome": "refused"}, attrsAsMap(t, waits[0].Attributes))
+	assert.Equal(t, map[string]string{"outcome": "refused", "team.id": admissionTestTeamID}, attrsAsMap(t, waits[0].Attributes))
 }
 
 // A latched checkpoint refusal records latched_error under the checkpoint
@@ -587,7 +589,7 @@ func TestPauseAdmissionMetrics_LatchedCheckpoint(t *testing.T) {
 
 	points := admissionCounterPoints(t, reader)
 	require.Len(t, points, 1)
-	assert.Equal(t, map[string]string{"outcome": "latched_error", "rpc": "checkpoint"}, attrsAsMap(t, points[0].Attributes))
+	assert.Equal(t, map[string]string{"outcome": "latched_error", "rpc": "checkpoint", "team.id": admissionTestTeamID}, attrsAsMap(t, points[0].Attributes))
 }
 
 // A swap resolving mid-grace records ready_after_wait on
@@ -624,11 +626,11 @@ func TestPauseAdmissionMetrics_ReadyOutcomes(t *testing.T) {
 
 		points := admissionCounterPoints(t, reader)
 		require.Len(t, points, 1)
-		assert.Equal(t, map[string]string{"outcome": "ready_after_wait", "rpc": "pause"}, attrsAsMap(t, points[0].Attributes))
+		assert.Equal(t, map[string]string{"outcome": "ready_after_wait", "rpc": "pause", "team.id": admissionTestTeamID}, attrsAsMap(t, points[0].Attributes))
 
 		waits := admissionWaitPoints(t, reader)
 		require.Len(t, waits, 1)
-		assert.Equal(t, map[string]string{"outcome": "ready_after_wait"}, attrsAsMap(t, waits[0].Attributes))
+		assert.Equal(t, map[string]string{"outcome": "ready_after_wait", "team.id": admissionTestTeamID}, attrsAsMap(t, waits[0].Attributes))
 		assert.Positive(t, waits[0].Sum)
 	})
 
@@ -654,7 +656,7 @@ func TestPauseAdmissionMetrics_ReadyOutcomes(t *testing.T) {
 
 		points := admissionCounterPoints(t, reader)
 		require.Len(t, points, 1)
-		assert.Equal(t, map[string]string{"outcome": "ready", "rpc": "pause"}, attrsAsMap(t, points[0].Attributes))
+		assert.Equal(t, map[string]string{"outcome": "ready", "rpc": "pause", "team.id": admissionTestTeamID}, attrsAsMap(t, points[0].Attributes))
 		assert.Empty(t, admissionWaitPoints(t, reader), "a no-wait admission must not sample the wait histogram")
 	})
 }

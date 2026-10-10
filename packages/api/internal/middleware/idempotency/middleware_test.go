@@ -910,7 +910,7 @@ func TestOwnerUsesSameDeadlineAsReservation(t *testing.T) {
 			require.Equal(t, reservationDeadline.Add(completionTimeout), responseDeadline)
 		},
 	}
-	r := testRouter(t, flags, s, uuid.New(), 500*time.Millisecond, func(c *gin.Context) {
+	r := testRouter(t, flags, s, uuid.New(), 5*time.Second, func(c *gin.Context) {
 		deadline, ok := c.Request.Context().Deadline()
 		require.True(t, ok)
 		require.Equal(t, reservationDeadline, deadline)

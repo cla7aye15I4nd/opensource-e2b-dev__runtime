@@ -15,6 +15,7 @@ import (
 	"github.com/e2b-dev/infra/packages/shared/pkg/logger"
 	"github.com/e2b-dev/infra/packages/shared/pkg/sandboxtypes"
 	"github.com/e2b-dev/infra/packages/shared/pkg/smap"
+	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
 )
 
 // MapSubscriber receives lifecycle notifications from the sandbox Map.
@@ -290,13 +291,14 @@ func (m *Map) MarkStopping(ctx context.Context, sandboxID, lifecycleID string) b
 // return clears asynchronously and well after this chain ends. Do not move this
 // call.
 //
-// sandboxType is carried only so the counter below can report it.
-func (m *Map) reclaimLiveEntryOnCleanup(ctx context.Context, cleanup *Cleanup, sandboxID, lifecycleID string, sandboxType sandboxtypes.SandboxType) {
+// Beyond the sandbox ID, runtime is carried only so the counter below can
+// report the team and the sandbox type.
+func (m *Map) reclaimLiveEntryOnCleanup(ctx context.Context, cleanup *Cleanup, runtime sandboxtypes.RuntimeMetadata, lifecycleID string) {
 	cleanup.Add(ctx, func(ctx context.Context) error {
 		// false is the normal outcome: delete, pause and a checkpoint that resumes
 		// fresh all reclaim the entry before the chain runs, and a lifecycle that
 		// never became live has no entry to reclaim.
-		if !m.MarkStopping(ctx, sandboxID, lifecycleID) {
+		if !m.MarkStopping(ctx, runtime.SandboxID, lifecycleID) {
 			return nil
 		}
 
@@ -315,9 +317,12 @@ func (m *Map) reclaimLiveEntryOnCleanup(ctx context.Context, cleanup *Cleanup, s
 		//
 		// String() maps the zero value to "sandbox", so an unset type joins the
 		// customer series rather than opening a third, unnamed one.
-		sbxType := sandboxType.String()
+		sbxType := runtime.SandboxType.String()
 
-		lifecycleUnstoppedCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("sandbox_type", sbxType)))
+		lifecycleUnstoppedCounter.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("sandbox_type", sbxType),
+			telemetry.WithTeamID(runtime.TeamID),
+		))
 
 		return nil
 	})

@@ -899,7 +899,10 @@ flowchart TB
 - PostgreSQL is external (connection string via secrets); Redis is a managed service or a
   single in-cluster instance; ClickHouse runs on its own nodes.
 - Observability: everything exports OTel; the collector fans out to ClickHouse (product metrics)
-  and Grafana Cloud/stack. Logs default to the legacy Vector → Loki path; dynamic log routing can
+  and Grafana Cloud/stack. The API and orchestrator export synchronous counters and histograms
+  as deltas, so per-team series do not accumulate in process memory; the collector converts
+  them back to cumulative (`deltatocumulative`) before any Prometheus backend, which only works
+  when each of those processes sends to a collector on its own node. Logs default to the legacy Vector → Loki path; dynamic log routing can
   select a primary collector and shadow collectors, and local-cluster log reads can be switched to
   ClickHouse with `logs-read-config` after `sandbox_logs` is populated (`LOGS_READ_CONFIG` is the
   flag's fallback where LaunchDarkly has no value). Once reads are on ClickHouse, Loki can be left

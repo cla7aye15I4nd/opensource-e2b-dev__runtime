@@ -688,7 +688,7 @@ func attachOwnedCleanup(t *testing.T, sandboxes *Map, sbx *Sandbox) {
 
 	sbx.cleanup = NewCleanup()
 	sbx.sandboxes = sandboxes
-	sandboxes.reclaimLiveEntryOnCleanup(t.Context(), sbx.cleanup, sbx.Runtime.SandboxID, sbx.LifecycleID, sbx.Runtime.SandboxType)
+	sandboxes.reclaimLiveEntryOnCleanup(t.Context(), sbx.cleanup, sbx.Runtime, sbx.LifecycleID)
 }
 
 // The cleanup chain owns the reclamation, and owns it at one point. The chain runs
@@ -724,7 +724,7 @@ func TestSandboxCloseReclaimsLiveEntryInTheCleanupChain(t *testing.T) {
 	sbx.cleanup = NewCleanup()
 	sbx.sandboxes = sandboxes
 	sbx.cleanup.Add(t.Context(), mark("late"))
-	sandboxes.reclaimLiveEntryOnCleanup(t.Context(), sbx.cleanup, sbx.Runtime.SandboxID, sbx.LifecycleID, sbx.Runtime.SandboxType)
+	sandboxes.reclaimLiveEntryOnCleanup(t.Context(), sbx.cleanup, sbx.Runtime, sbx.LifecycleID)
 	sbx.cleanup.Add(t.Context(), mark("early"))
 
 	require.NoError(t, sandboxes.MarkRunning(t.Context(), sbx))

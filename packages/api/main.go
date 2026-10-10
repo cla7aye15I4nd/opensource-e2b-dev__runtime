@@ -146,6 +146,7 @@ func NewGinServer(ctx context.Context, config cfg.Config, tel *telemetry.Client,
 			"/v2/sandboxes",
 			"/v2/sandboxes/:sandboxID/connect",
 		),
+		customMiddleware.LabelMetricsWithTeam(),
 		sharedmiddleware.LoggingMiddleware(l, sharedmiddleware.Config{ //nolint:contextcheck // ctx is captured before c.Next() intentionally to avoid seeing child context cancellations from inner middleware
 			TimeFormat:   time.RFC3339Nano,
 			UTC:          true,
@@ -290,7 +291,7 @@ func run() int {
 	serviceInstanceID := uuid.New().String()
 	nodeID := env.GetNodeID()
 
-	tel, err := telemetry.New(ctx, nodeID, serviceName, commitSHA, serviceVersion, serviceInstanceID)
+	tel, err := telemetry.NewWithOptions(ctx, nodeID, serviceName, commitSHA, serviceVersion, serviceInstanceID, telemetry.WithDeltaTemporality())
 	if err != nil {
 		logger.L().Fatal(ctx, "failed to create metrics exporter", zap.Error(err))
 	}

@@ -460,6 +460,7 @@ func (o *Orchestrator) CreateSandbox(
 		attribute.Bool("is_resume", isResume),
 		attribute.Bool("node_affinity_requested", affinityRequested),
 		attribute.Bool("node_affinity_success", affinityRequested && node.ID == *sbxData.NodeID),
+		telemetry.WithTeamID(team.TeamID()),
 	}
 	o.createdSandboxesCounter.Add(ctx, 1, metric.WithAttributes(attributes...))
 
@@ -623,7 +624,7 @@ func (o *Orchestrator) maybeRemapResumeOriginNode(ctx context.Context, sandboxID
 
 	// Drop the cached snapshot so the next resume reads the new origin node.
 	o.snapshotCache.Invalidate(wctx, sandboxID)
-	o.resumeOriginNodeRemapCounter.Add(wctx, 1)
+	o.resumeOriginNodeRemapCounter.Add(wctx, 1, metric.WithAttributes(telemetry.WithTeamID(team.TeamID())))
 
 	oldNodeID := ""
 	if originNodeID != nil {

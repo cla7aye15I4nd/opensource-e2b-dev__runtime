@@ -1017,6 +1017,7 @@ func (f *Factory) CreateSandbox(
 		f.config,
 		ips,
 		sandboxFiles,
+		runtime.TeamID,
 		config.FirecrackerConfig,
 		rootfsProvider,
 		fc.ConstantRootfsPaths,
@@ -1077,7 +1078,7 @@ func (f *Factory) CreateSandbox(
 	}
 
 	f.Sandboxes.AssignNetwork(ctx, sbx)
-	f.Sandboxes.reclaimLiveEntryOnCleanup(ctx, cleanup, runtime.SandboxID, sbx.LifecycleID, runtime.SandboxType)
+	f.Sandboxes.reclaimLiveEntryOnCleanup(ctx, cleanup, runtime, sbx.LifecycleID)
 
 	// Do not move this call: it must run after AssignNetwork above and
 	// before fcHandle.Create below, so OnNetworkAssign always runs before
@@ -1605,6 +1606,7 @@ func (f *Factory) ResumeSandbox(
 		f.config,
 		ips,
 		sandboxFiles,
+		runtime.TeamID,
 		// The versions need to base exactly the same as the paused sandbox template because of the FC compatibility.
 		config.FirecrackerConfig,
 		overlay,
@@ -1731,7 +1733,7 @@ func (f *Factory) ResumeSandbox(
 	// during the resume (e.g. for TCP firewall lookups). On failure the deferred cleanup
 	// will remove it.
 	f.Sandboxes.AssignNetwork(ctx, sbx)
-	f.Sandboxes.reclaimLiveEntryOnCleanup(ctx, cleanup, runtime.SandboxID, sbx.LifecycleID, runtime.SandboxType)
+	f.Sandboxes.reclaimLiveEntryOnCleanup(ctx, cleanup, runtime, sbx.LifecycleID)
 
 	reason := NetworkAssignReasonResume
 	if ropts.skipLiveRegistration {
@@ -2307,6 +2309,7 @@ func (s *Sandbox) Pause(
 						attribute.Bool("fs_only", pauseOpts.filesystemSnapshot),
 						attribute.String("balloon_mode", s.BalloonMode()),
 						attribute.Bool("success", false),
+						s.teamAttr(),
 					))
 
 				// The failed checkpoint restores a live sandbox, so it needs
@@ -2484,6 +2487,7 @@ func (s *Sandbox) Pause(
 				attribute.Bool("fs_only", pauseOpts.filesystemSnapshot),
 				attribute.String("balloon_mode", s.BalloonMode()),
 				attribute.Bool("success", true),
+				s.teamAttr(),
 			))
 
 		// The live VM keeps running, so undo anything the pause froze. Unlike the
@@ -2709,7 +2713,7 @@ func (s *Sandbox) processMemorySnapshot(ctx context.Context, buildID uuid.UUID, 
 	// artifacts the new snapshot does not parent). Only the in-place path
 	// advances the baseline — a destroyed sandbox has no next interval.
 	s.applyInPlaceExportUnion(memfileDiffMetadata, keepMemfdOpen)
-	recordSnapshotDiff(ctx, "memfile", memfileDiffMetadata, memfileHeader)
+	recordSnapshotDiff(ctx, s.Runtime.TeamID, "memfile", memfileDiffMetadata, memfileHeader)
 
 	// Deferred (CoW) memory export: install the window over the dirty set
 	// read above. EVERY setup failure falls back to the synchronous copy —
@@ -2736,6 +2740,7 @@ func (s *Sandbox) processMemorySnapshot(ctx context.Context, buildID uuid.UUID, 
 						attribute.Bool("deferred", startMemSeal != nil),
 						attribute.String("balloon_mode", s.BalloonMode()),
 						attribute.Bool("success", true),
+						s.teamAttr(),
 					))
 
 				return mem, startMemSeal, nil
@@ -2804,6 +2809,7 @@ func (s *Sandbox) processMemorySnapshot(ctx context.Context, buildID uuid.UUID, 
 		dedupFreeIndex,
 		keepMemfdOpen,
 		s.BalloonMode(),
+		s.Runtime.TeamID,
 	)
 	if err != nil {
 		return MemorySnapshot{}, nil, fmt.Errorf("error while post processing: %w", err)
@@ -3035,7 +3041,7 @@ func (s *Sandbox) runDeferredMemoryExport(
 	// full 2s on a stuck FC API — folding that in would make a resume
 	// failure read as a slow sweep. The resume has its own outcome counter.
 	memorySealDurationHistogram.Record(ctx, time.Since(start).Milliseconds(),
-		metric.WithAttributes(attribute.Bool("success", err == nil)))
+		metric.WithAttributes(attribute.Bool("success", err == nil), s.teamAttr()))
 	// The window no longer owns any page: free-page reporting may discard
 	// again. Resume on success AND failure — a leaked pause would block the
 	// guest's reporting worker for the sandbox's lifetime.
@@ -3266,6 +3272,7 @@ func pauseProcessMemory(
 	dedupFreeIndex bool,
 	keepMemfdOpen bool,
 	balloonMode string,
+	teamID string,
 ) (d build.Diff, h *DiffHeader, provisionalHeader *header.Header, provisionalDiff build.Diff, provisionalSwapDone func(), e error) {
 	ctx, span := tracer.Start(ctx, "process-memory")
 	defer span.End()
@@ -3286,6 +3293,7 @@ func pauseProcessMemory(
 				attribute.Bool("deferred", false),
 				attribute.String("balloon_mode", balloonMode),
 				attribute.Bool("success", e == nil),
+				telemetry.WithTeamID(teamID),
 			))
 	}()
 
@@ -3345,7 +3353,7 @@ func pauseProcessMemory(
 		if originalMemfile == nil {
 			post = nil
 		}
-		recordSnapshotDedup(ctx, "memfile", diffMetadata, post, dedupBestEffort)
+		recordSnapshotDedup(ctx, teamID, "memfile", diffMetadata, post, dedupBestEffort)
 		setHeader(meta.ToDiffHeader(ctx, originalHeader, buildID))
 	}()
 
@@ -3434,6 +3442,7 @@ func (s *Sandbox) processRootfsSnapshot(
 				// resumes after) vs a destroy-path pause / resume-fresh flow.
 				attribute.Bool("in_place", pauseOpts.maintainSandbox),
 				attribute.Bool("success", e == nil),
+				s.teamAttr(),
 			))
 	}()
 
@@ -3464,6 +3473,7 @@ func (s *Sandbox) processRootfsSnapshot(
 			originalHeader,
 			&RootfsDiffCreator{rootfs: s.rootfs},
 			s.config.DefaultCacheDir,
+			s.Runtime.TeamID,
 		)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("synchronous in-place rootfs export failed: %w", err)
@@ -3497,6 +3507,7 @@ func (s *Sandbox) processRootfsSnapshot(
 			closeHook: s.Close,
 		},
 		s.config.DefaultCacheDir,
+		s.Runtime.TeamID,
 	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("synchronous rootfs export failed: %w", err)
@@ -3512,6 +3523,7 @@ func pauseProcessRootfs(
 	originalHeader *header.Header,
 	diffCreator DiffCreator,
 	cacheDir string,
+	teamID string,
 ) (d build.Diff, h *header.Header, e error) {
 	rootfsDiffFile, err := build.NewLocalDiffFile(cacheDir, buildID.String(), build.Rootfs)
 	if err != nil {
@@ -3525,7 +3537,7 @@ func pauseProcessRootfs(
 		return nil, nil, fmt.Errorf("error creating diff: %w", err)
 	}
 	telemetry.ReportEvent(ctx, "exported rootfs")
-	recordSnapshotDiff(ctx, "rootfs", rootfsDiffMetadata, originalHeader)
+	recordSnapshotDiff(ctx, teamID, "rootfs", rootfsDiffMetadata, originalHeader)
 
 	rootfsDiff, err := rootfsDiffFile.CloseToDiff(int64(originalHeader.Metadata.BlockSize))
 	if err != nil {
@@ -3578,7 +3590,7 @@ func (s *Sandbox) prepareRootfsSeal(
 	if err != nil {
 		return nil, fmt.Errorf("reading frozen cache metadata: %w", err)
 	}
-	recordSnapshotDiff(ctx, "rootfs", diffMetadata, originalHeader)
+	recordSnapshotDiff(ctx, s.Runtime.TeamID, "rootfs", diffMetadata, originalHeader)
 
 	rootfsHeader, err := diffMetadata.ToDiffHeader(ctx, originalHeader, buildID)
 	if err != nil {
@@ -3625,6 +3637,7 @@ func (s *Sandbox) runRootfsSealCore(
 		metric.WithAttributes(
 			attribute.Bool("in_place", inPlace),
 			attribute.Bool("success", err == nil),
+			s.teamAttr(),
 		))
 
 	return err
@@ -4351,6 +4364,7 @@ func (s *Sandbox) WaitForEnvd(
 			startupAttrs := metric.WithAttributes(
 				attribute.String("start_type", string(startType)),
 				attribute.Bool("success", e == nil),
+				s.teamAttr(),
 			)
 			uffdStartupPagesHistogram.Record(ctx, stats.Pages, startupAttrs)
 			uffdStartupSourcePagesHistogram.Record(ctx, stats.SourcePages, startupAttrs)
@@ -4394,6 +4408,11 @@ func (s *Sandbox) WaitForEnvd(
 	return nil
 }
 
+// teamAttr labels a per-sandbox metric with the sandbox's team.
+func (m *Metadata) teamAttr() attribute.KeyValue {
+	return telemetry.WithTeamID(m.Runtime.TeamID)
+}
+
 // waitForEnvdDurationAttrs is the attribute set the envd-init duration histogram is
 // recorded with, for a start of startType that ended with e.
 func (s *Sandbox) waitForEnvdDurationAttrs(startType StartType, e error) []attribute.KeyValue {
@@ -4404,6 +4423,7 @@ func (s *Sandbox) waitForEnvdDurationAttrs(startType StartType, e error) []attri
 		attribute.Bool("success", e == nil),
 		attribute.String("start_type", string(startType)),
 		attribute.String("exit_type", string(classifyEnvdInitExit(e))),
+		s.teamAttr(),
 	}
 
 	return append(attrs, s.envdProtectionAttrs()...)

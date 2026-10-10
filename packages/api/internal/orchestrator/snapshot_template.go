@@ -103,7 +103,7 @@ func (o *Orchestrator) CreateSnapshotTemplate(ctx context.Context, teamID uuid.U
 	// orchestrator with the same ExecutionID. On error the orchestrator
 	// kills the sandbox itself; RemoveSandbox is still needed to clean up
 	// API-side state (store, routing, analytics).
-	client, childCtx := node.GetClient(ctx)
+	client, childCtx := node.GetSandboxClient(ctx, sbx.TeamID.String())
 	_, err = client.Sandbox.Checkpoint(childCtx, &orchestrator.SandboxCheckpointRequest{
 		SandboxId:      sbx.SandboxID,
 		BuildId:        upsertResult.BuildID.String(),

@@ -298,6 +298,7 @@ func liveRouteSandbox(t *testing.T, s *Server, id string, slotIdx int, read func
 	sbx.LifecycleID = "lifecycle-1"
 	sbx.Resources.Slot = slot
 	sbx.Config.Envd.Version = "9.9.9"
+	sbx.Runtime.TeamID = "team-1"
 	s.sandboxFactory.Sandboxes.MarkRunning(t.Context(), sbx)
 
 	return sbx
@@ -321,7 +322,7 @@ func TestCheckpoint_RecordsRouteAndBalloonMode(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, codes.FailedPrecondition, st.Code())
 
-	want := map[string]string{"in_place": "true", "fs_only": "false", "route": routeInPlace, "balloon_mode": "hinting", "deferred": "false", "success": "false"}
+	want := map[string]string{"in_place": "true", "fs_only": "false", "route": routeInPlace, "balloon_mode": "hinting", "deferred": "false", "success": "false", "team.id": "team-1"}
 	points := checkpointCounterAttrs(t, reader)
 	require.Len(t, points, 1)
 	assert.Equal(t, want, points[0])

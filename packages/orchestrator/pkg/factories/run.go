@@ -453,14 +453,15 @@ func run(config cfg.Config, opts Options) (success bool) {
 	}(&g)
 
 	// Setup telemetry
-	tel, err := telemetry.New(
+	tel, err := telemetry.NewWithOptions(
 		ctx,
 		nodeID,
 		serviceName,
 		commitSHA,
 		version,
 		serviceInstanceID,
-		attribute.Key("host.labels").StringSlice(config.NodeLabels),
+		telemetry.WithResourceAttributes(attribute.Key("host.labels").StringSlice(config.NodeLabels)),
+		telemetry.WithDeltaTemporality(),
 	)
 	if err != nil {
 		logger.L().Fatal(ctx, "failed to init telemetry", zap.Error(err))
@@ -984,7 +985,7 @@ func run(config cfg.Config, opts Options) (success bool) {
 	// No connection age: ChunkService and VolumeService streams may outlive the
 	// shared default's age plus grace, and how their clients behave on the
 	// GOAWAY has not been measured.
-	grpcServer := e2bgrpc.NewGRPCServer(tel, e2bgrpc.WithSandboxResumeMetrics(), e2bgrpc.WithMaxConnectionAge(0, 0))
+	grpcServer := e2bgrpc.NewGRPCServer(tel, e2bgrpc.WithSandboxMetricAttributes(), e2bgrpc.WithMaxConnectionAge(0, 0))
 	orchestrator.RegisterSandboxServiceServer(grpcServer, orchestratorService)
 	orchestrator.RegisterVolumeServiceServer(grpcServer, volumeService)
 	orchestrator.RegisterChunkServiceServer(grpcServer, orchestratorService)

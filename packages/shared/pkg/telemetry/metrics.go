@@ -90,11 +90,17 @@ var uploadBytesView = sdkmetric.NewView(
 )
 
 func NewMeterProvider(metricsExporter sdkmetric.Exporter, metricExportPeriod time.Duration, res *resource.Resource, extraOption ...sdkmetric.Option) (*sdkmetric.MeterProvider, error) {
+	return newMeterProvider(metricsExporter, metricExportPeriod, res, nil, extraOption)
+}
+
+// newMeterProvider is NewMeterProvider with options for the periodic reader
+// it creates.
+func newMeterProvider(metricsExporter sdkmetric.Exporter, metricExportPeriod time.Duration, res *resource.Resource, readerOptions []sdkmetric.PeriodicReaderOption, extraOption []sdkmetric.Option) (*sdkmetric.MeterProvider, error) {
 	opts := []sdkmetric.Option{
 		sdkmetric.WithReader(
 			sdkmetric.NewPeriodicReader(
 				metricsExporter,
-				sdkmetric.WithInterval(metricExportPeriod),
+				append([]sdkmetric.PeriodicReaderOption{sdkmetric.WithInterval(metricExportPeriod)}, readerOptions...)...,
 			),
 		),
 		// Disable exemplars: they count 1:1 against the Mimir tenant items/s

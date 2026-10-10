@@ -289,7 +289,14 @@ func (s *Server) harvestResumePrefetchAsync(
 			attribute.String("path", string(source)),
 		)
 		sealWaitDurationHistogram.Record(hCtx, sealWait.Milliseconds(), resultAttr)
-		harvestAttemptsCounter.Add(hCtx, 1, resultAttr)
+		// The attempt count also names the team: a harvest that fails to resume
+		// the fresh snapshot is the first sign that the snapshot cannot be resumed
+		// at all, and that is a per-tenant question before it is a fleet one.
+		harvestAttemptsCounter.Add(hCtx, 1, metric.WithAttributes(
+			attribute.String("result", string(result.outcome)),
+			attribute.String("path", string(source)),
+			telemetry.WithTeamID(sbx.Runtime.TeamID),
+		))
 		// Slot hold and persist wait are recorded apart because only the first is
 		// a node-capacity cost. Summing them into one "harvest duration" is what
 		// made the timeout look like it bounded the persist as well.

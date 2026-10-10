@@ -86,7 +86,7 @@ func snapshotInstance(ctx context.Context, node *nodemanager.Node, sbx sandbox.S
 	childCtx, childSpan := tracer.Start(ctx, "snapshot-instance")
 	defer childSpan.End()
 
-	client, childCtx := node.GetClient(childCtx)
+	client, childCtx := node.GetSandboxClient(childCtx, sbx.TeamID.String())
 	_, err := client.Sandbox.Pause(
 		childCtx, &orchestrator.SandboxPauseRequest{
 			SandboxId:      sbx.SandboxID,

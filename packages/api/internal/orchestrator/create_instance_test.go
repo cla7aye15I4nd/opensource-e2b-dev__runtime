@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/metric/noop"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/e2b-dev/infra/packages/api/internal/api"
 	"github.com/e2b-dev/infra/packages/api/internal/orchestrator/nodemanager"
@@ -28,6 +30,7 @@ import (
 	redis_utils "github.com/e2b-dev/infra/packages/shared/pkg/redis"
 	sandbox_network "github.com/e2b-dev/infra/packages/shared/pkg/sandbox-network"
 	"github.com/e2b-dev/infra/packages/shared/pkg/smap"
+	"github.com/e2b-dev/infra/packages/shared/pkg/telemetry"
 )
 
 // testBuild returns a minimal queries.EnvBuild that satisfies CreateSandbox.
@@ -616,4 +619,36 @@ func TestCreateSandbox_FilesystemOnlySnapshotWithoutBuildCPUStillPinned(t *testi
 			assert.Equal(t, tt.wantErrCode, apiErr.ErrorCode)
 		})
 	}
+}
+
+func TestCreateSandbox_CreatedCounterCarriesTeam(t *testing.T) {
+	t.Parallel()
+
+	o := newCreateSandboxTestOrchestrator(t)
+	reader := sdkmetric.NewManualReader()
+	counter, err := telemetry.GetCounter(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("github.com/e2b-dev/infra/packages/api/internal/orchestrator"), telemetry.ApiOrchestratorCreatedSandboxes)
+	require.NoError(t, err)
+	o.createdSandboxesCounter = counter
+
+	team := testTeam()
+	now := time.Now()
+	build := testBuild()
+	fetcher := func(_ context.Context) (SandboxMetadata, *api.APIError) {
+		return SandboxMetadata{TemplateID: "tpl", BaseTemplateID: "base-tpl", Build: build}, nil
+	}
+
+	_, apiErr := o.CreateSandbox(t.Context(), "sbx-team-"+uuid.New().String()[:8], uuid.New().String(), team,
+		fetcher, now, now.Add(time.Hour), time.Hour, true, false, sandbox.CreationMetadata{})
+	require.Nil(t, apiErr)
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &rm))
+	require.Len(t, rm.ScopeMetrics, 1)
+	require.Len(t, rm.ScopeMetrics[0].Metrics, 1)
+	sum, ok := rm.ScopeMetrics[0].Metrics[0].Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, sum.DataPoints, 1)
+	teamID, ok := sum.DataPoints[0].Attributes.Value("team.id")
+	require.True(t, ok)
+	assert.Equal(t, team.ID.String(), teamID.AsString())
 }

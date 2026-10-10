@@ -217,6 +217,7 @@ func (s *Server) Create(ctx context.Context, req *orchestrator.SandboxCreateRequ
 				attribute.Bool("success", createErr == nil),
 				attribute.Bool("envd.upgraded", envdUpgraded),
 				attribute.String("fs_recovery", string(fsRecovery)),
+				telemetry.WithTeamID(req.GetSandbox().GetTeamId()),
 			),
 		)
 	}()
@@ -840,7 +841,7 @@ func (s *Server) emitSandboxKilled(ctx context.Context, sbx *sandbox.Sandbox, ki
 	teamID, buildId, eventsTTLDays, eventData := s.prepareSandboxEventData(ctx, sbx)
 	eventData[executionEventDataKey] = s.getSandboxExecutionData(sbx)
 	addKillReason(eventData, killReason)
-	recordSandboxKill(ctx, s.sandboxKilledCounter, killReason)
+	recordSandboxKill(ctx, s.sandboxKilledCounter, sbx.Runtime.TeamID, killReason)
 	s.publishEventAsync(
 		ctx,
 		teamID,
@@ -897,12 +898,15 @@ func addResumeMode(eventData map[string]any, filesystemBooted bool) {
 }
 
 // recordSandboxKill increments the kill counter with a bounded reason label.
-func recordSandboxKill(ctx context.Context, counter metric.Int64Counter, killReason string) {
+func recordSandboxKill(ctx context.Context, counter metric.Int64Counter, teamID, killReason string) {
 	if killReason == "" {
 		killReason = killReasonUnknown
 	}
 
-	counter.Add(ctx, 1, metric.WithAttributes(attribute.String("kill_reason", killReason)))
+	counter.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("kill_reason", killReason),
+		telemetry.WithTeamID(teamID),
+	))
 }
 
 // recordExecutionDuration samples how long one sandbox execution ran, labeled
@@ -916,7 +920,10 @@ func (s *Server) recordExecutionDuration(ctx context.Context, sbx *sandbox.Sandb
 	}
 
 	s.sandboxExecutionDuration.Record(ctx, duration.Milliseconds(),
-		metric.WithAttributes(attribute.String("stop_reason", string(sbx.GetStopReason()))))
+		metric.WithAttributes(
+			attribute.String("stop_reason", string(sbx.GetStopReason())),
+			telemetry.WithTeamID(sbx.Runtime.TeamID),
+		))
 }
 
 // recordCrash reports an execution that ended with no stop reason. The cause
@@ -926,7 +933,10 @@ func (s *Server) recordCrash(ctx context.Context, sbx *sandbox.Sandbox, waitErr 
 	exitInfo := sbx.FirecrackerExit()
 	cause := crashCause(exitInfo, sbx.MemoryHandlerErr())
 
-	s.sandboxCrashedCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("cause", string(cause))))
+	s.sandboxCrashedCounter.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("cause", string(cause)),
+		telemetry.WithTeamID(sbx.Runtime.TeamID),
+	))
 
 	fields := append(
 		[]zap.Field{zap.Error(waitErr), zap.String("crash_cause", string(cause))},
@@ -967,7 +977,7 @@ func isCleanFirecrackerExit(cause fc.CrashCause, waitErr error) bool {
 // recordPauseAdmission records one admission decision. The wait histogram
 // samples only the outcomes that actually waited; an empty outcome (the
 // caller's context ended mid-wait) records nothing — no decision was made.
-func (s *Server) recordPauseAdmission(ctx context.Context, rpc string, outcome sandbox.SnapshotAdmissionOutcome, waited time.Duration) {
+func (s *Server) recordPauseAdmission(ctx context.Context, teamID, rpc string, outcome sandbox.SnapshotAdmissionOutcome, waited time.Duration) {
 	if outcome == "" {
 		return
 	}
@@ -975,11 +985,15 @@ func (s *Server) recordPauseAdmission(ctx context.Context, rpc string, outcome s
 	s.pauseAdmissionCounter.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("outcome", string(outcome)),
 		attribute.String("rpc", rpc),
+		telemetry.WithTeamID(teamID),
 	))
 
 	if outcome == sandbox.SnapshotAdmissionReadyAfterWait || outcome == sandbox.SnapshotAdmissionRefused {
 		s.pauseAdmissionWaitDuration.Record(ctx, waited.Milliseconds(),
-			metric.WithAttributes(attribute.String("outcome", string(outcome))))
+			metric.WithAttributes(
+				attribute.String("outcome", string(outcome)),
+				telemetry.WithTeamID(teamID),
+			))
 	}
 }
 
@@ -994,11 +1008,15 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 	// can't distinguish them) and success, so dashboards can scope pause
 	// call-count / error-rate / latency to filesystem-only pauses.
 	pauseStart := time.Now()
+	// Unknown until the sandbox is looked up; a pause of a missing sandbox
+	// records an empty team.
+	var sandboxTeamID string
 	defer func() {
 		s.sandboxPauseDuration.Record(ctx, time.Since(pauseStart).Milliseconds(),
 			metric.WithAttributes(
 				attribute.Bool("fs_only", in.GetFilesystemOnly()),
 				attribute.Bool("success", err == nil),
+				telemetry.WithTeamID(sandboxTeamID),
 			),
 		)
 	}()
@@ -1015,6 +1033,7 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 
 		return nil, status.Error(codes.NotFound, "sandbox not found")
 	}
+	sandboxTeamID = sbx.Runtime.TeamID
 
 	ctx = featureflags.AddToContext(ctx, sandboxFlagContexts(sbx)...)
 
@@ -1031,7 +1050,7 @@ func (s *Server) Pause(ctx context.Context, in *orchestrator.SandboxPauseRequest
 	var latchedErr error
 	if graceMs := s.featureFlags.IntFlag(ctx, featureflags.PauseAdmissionGraceMs); graceMs >= 0 {
 		outcome, waited, admitErr := sbx.AwaitSnapshotAdmission(ctx, time.Duration(graceMs)*time.Millisecond, !in.GetFilesystemOnly())
-		s.recordPauseAdmission(ctx, "pause", outcome, waited)
+		s.recordPauseAdmission(ctx, sbx.Runtime.TeamID, "pause", outcome, waited)
 		switch {
 		case errors.Is(admitErr, sandbox.ErrSnapshotAdmissionPending):
 			sbxlogger.E(sbx).Warn(ctx, "Refusing pause: parent memfile header is still deduplicating", zap.Duration("waited", waited))
@@ -1321,7 +1340,7 @@ func (s *Server) Checkpoint(ctx context.Context, in *orchestrator.SandboxCheckpo
 	// has no memory parent to wait for, only the latched checks apply.
 	if graceMs := s.featureFlags.IntFlag(ctx, featureflags.PauseAdmissionGraceMs); graceMs >= 0 {
 		outcome, waited, admitErr := sbx.AwaitSnapshotAdmission(ctx, time.Duration(graceMs)*time.Millisecond, !fsOnly)
-		s.recordPauseAdmission(ctx, "checkpoint", outcome, waited)
+		s.recordPauseAdmission(ctx, sbx.Runtime.TeamID, "checkpoint", outcome, waited)
 		switch {
 		case errors.Is(admitErr, sandbox.ErrSnapshotAdmissionPending):
 			sbxlogger.E(sbx).Warn(ctx, "Refusing checkpoint: parent memfile header is still deduplicating", zap.Duration("waited", waited))
@@ -1424,6 +1443,7 @@ func (s *Server) Checkpoint(ctx context.Context, in *orchestrator.SandboxCheckpo
 		attribute.String("balloon_mode", balloonMode.String()),
 		attribute.Bool("deferred", deferred),
 		attribute.Bool("success", err == nil),
+		telemetry.WithTeamID(sbx.Runtime.TeamID),
 	)
 	s.sandboxCheckpointDuration.Record(ctx, time.Since(start).Milliseconds(), attrs)
 
@@ -2068,7 +2088,10 @@ func (s *Server) uploadSnapshotAsync(ctx context.Context, sbx *sandbox.Sandbox, 
 		)
 		if err != nil {
 			sbxlogger.I(sbx).Error(spanCtx, "snapshot upload did not durably land", zap.Error(err))
-			s.uploadFailedCounter.Add(spanCtx, 1, metric.WithAttributes(attribute.Bool("fs_only", res.filesystemOnly)))
+			s.uploadFailedCounter.Add(spanCtx, 1, metric.WithAttributes(
+				attribute.Bool("fs_only", res.filesystemOnly),
+				telemetry.WithTeamID(sbx.Runtime.TeamID),
+			))
 		} else {
 			sbxlogger.I(sbx).Info(spanCtx, "snapshot finished uploading successfully")
 		}
@@ -2243,11 +2266,12 @@ func (s *Server) publishEventAsync(ctx context.Context, teamID uuid.UUID, event 
 // reads, which costs far more than reading the same bytes sequentially. It also
 // sits BEFORE the combined histogram starts timing, so without
 // this phase the dominant cost of a cold upgrade appears in no metric at all.
-func (s *Server) recordUpgradePhase(ctx context.Context, phase, result string, start time.Time) {
+func (s *Server) recordUpgradePhase(ctx context.Context, teamID, phase, result string, start time.Time) {
 	s.envdUpgradePhaseDuration.Record(ctx, time.Since(start).Milliseconds(),
 		metric.WithAttributes(
 			attribute.String("phase", phase),
 			attribute.String("result", result),
+			telemetry.WithTeamID(teamID),
 		))
 }
 
@@ -2290,8 +2314,8 @@ func phaseResult(err error) string {
 // with the two-outcome phaseResult -- which read an expired budget as a success
 // and hid the one stall this phase was added to expose. The mistake is now a
 // compile error rather than something a test has to catch.
-func (s *Server) recordDeliveryPhase(ctx context.Context, execConfirmed bool, err error, start time.Time) {
-	s.recordUpgradePhase(ctx, "deliver", deliveryResult(execConfirmed, err), start)
+func (s *Server) recordDeliveryPhase(ctx context.Context, teamID string, execConfirmed bool, err error, start time.Time) {
+	s.recordUpgradePhase(ctx, teamID, "deliver", deliveryResult(execConfirmed, err), start)
 }
 
 // deliveryResult labels the delivery phase, which has three outcomes rather than
@@ -2357,7 +2381,10 @@ func (s *Server) maybeUpgradeEnvd(ctx context.Context, sbx *sandbox.Sandbox) (up
 				attribute.String("to_version", toVersion),
 			))
 			s.envdUpgradeDuration.Record(ctx, time.Since(start).Milliseconds(),
-				metric.WithAttributes(attribute.String("result", result)))
+				metric.WithAttributes(
+					attribute.String("result", result),
+					telemetry.WithTeamID(sbx.Runtime.TeamID),
+				))
 		}
 	}()
 
@@ -2444,7 +2471,7 @@ func (s *Server) maybeUpgradeEnvd(ctx context.Context, sbx *sandbox.Sandbox) (up
 	// together the series is dominated by samples where no probe ran, and cannot
 	// answer the one question it was added for.
 	if resolveResult, recorded := resolvePhaseResult(path, reason); recorded {
-		s.recordUpgradePhase(ctx, "resolve", resolveResult, resolveStart)
+		s.recordUpgradePhase(ctx, sbx.Runtime.TeamID, "resolve", resolveResult, resolveStart)
 	}
 	toVersion = tv
 	if path == "" {
@@ -2563,7 +2590,7 @@ func (s *Server) maybeUpgradeEnvd(ctx context.Context, sbx *sandbox.Sandbox) (up
 	// would also outnumber the attempts it is read against.
 	deferredCopyGone := binCache != nil && errors.Is(err, fs.ErrNotExist)
 	if !deferredCopyGone {
-		s.recordDeliveryPhase(ctx, execConfirmed, err, deliverStart)
+		s.recordDeliveryPhase(ctx, sbx.Runtime.TeamID, execConfirmed, err, deliverStart)
 	}
 	if err != nil {
 		// A promotion can retire the copy between the resolver's stat and this
@@ -2607,7 +2634,7 @@ func (s *Server) maybeUpgradeEnvd(ctx context.Context, sbx *sandbox.Sandbox) (up
 	readyCtx := context.WithoutCancel(upCtx)
 	readyStart := time.Now()
 	readyErr := sbx.WaitForEnvd(readyCtx, sandbox.StartTypeResume, readyTimeout)
-	s.recordUpgradePhase(ctx, "ready", phaseResult(readyErr), readyStart)
+	s.recordUpgradePhase(ctx, sbx.Runtime.TeamID, "ready", phaseResult(readyErr), readyStart)
 	if readyErr != nil {
 		result = "not_ready"
 		span.RecordError(readyErr)

@@ -529,6 +529,7 @@ func (s *Sandbox) initEnvd(ctx context.Context, startType StartType, recordMetri
 		telemetry.WithEnvdVersion(s.Config.Envd.Version),
 		attribute.Int64("timeout_ms", s.internalConfig.EnvdInitRequestTimeout.Milliseconds()),
 		attribute.String("start_type", string(startType)),
+		s.teamAttr(),
 	}
 
 	// success is kept for backward compatibility until consumers move to exit_type.

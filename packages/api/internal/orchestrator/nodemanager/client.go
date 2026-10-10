@@ -13,6 +13,7 @@ import (
 
 	"github.com/e2b-dev/infra/packages/api/internal/api"
 	"github.com/e2b-dev/infra/packages/api/internal/clusters"
+	grpcshared "github.com/e2b-dev/infra/packages/shared/pkg/grpc"
 	orchestratorinfo "github.com/e2b-dev/infra/packages/shared/pkg/grpc/orchestrator-info"
 )
 
@@ -31,6 +32,7 @@ func NewClient(tracerProvider trace.TracerProvider, meterProvider metric.MeterPr
 			otelgrpc.NewClientHandler(
 				otelgrpc.WithTracerProvider(tracerProvider),
 				otelgrpc.WithMeterProvider(meterProvider),
+				grpcshared.WithSandboxClientMetricAttributes(),
 			),
 		),
 		grpc.WithKeepaliveParams(
