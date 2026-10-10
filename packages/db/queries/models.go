@@ -90,16 +90,6 @@ type Snapshot struct {
 	Config              *types.PausedSandboxConfig
 }
 
-type UsersTeam struct {
-	ID        int64
-	UserID    uuid.UUID
-	TeamID    uuid.UUID
-	IsDefault bool
-	AddedBy   *uuid.UUID
-	CreatedAt pgtype.Timestamp
-	UuidID    uuid.UUID
-}
-
 type Volume struct {
 	ID         uuid.UUID
 	TeamID     uuid.UUID
